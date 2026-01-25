@@ -1,21 +1,27 @@
-use breaking_net::{BroadcastListener, BroadcastWriter};
+use std::net;
+
+use breaking_net::{BroadcastListener, BroadcastWriter, socket_addr};
 
 const PORT: u16 = 5555;
+const LISTENER_ADDR: net::SocketAddr = socket_addr!(localhost; PORT);
+const WRITER_ADDR: net::SocketAddr = socket_addr!(localhost; 0);
 
-fn make_listener(port: u16) -> BroadcastListener {
-    BroadcastListener::new(port).unwrap()
+fn make_listener() -> BroadcastListener {
+    BroadcastListener::new(LISTENER_ADDR).unwrap()
 }
 
-fn make_writer(port: u16) -> BroadcastWriter {
-    BroadcastWriter::new(port).unwrap()
+fn make_writer() -> BroadcastWriter {
+    BroadcastWriter::new(WRITER_ADDR, PORT).unwrap()
 }
 
 /// Test common broadcasting use-cases
+/// 
+/// TODO: For some reason this work differently on linux?
 #[test]
 fn test_broadcasts() {
-    let mut listener1 = make_listener(PORT);
-    let mut listener2 = make_listener(PORT);
-    let mut writer = make_writer(PORT);
+    let mut listener1 = make_listener();
+    let mut listener2 = make_listener();
+    let mut writer = make_writer();
 
     // No packets as of now
     assert!(!listener1.has_packets());

@@ -1,9 +1,11 @@
-use std::{io::Error, mem::MaybeUninit};
+use std::io::Write;
+use std::mem::MaybeUninit;
 
 use socket2 as sock;
 use std::net as net;
 use std::io as io;
 
+mod crc32;
 mod packet;
 
 /// The maximum transport unit for our packets. I'm using a much lower number here to avoid
@@ -54,10 +56,7 @@ pub struct BroadcastListener {
 }
 
 impl BroadcastListener {
-    pub fn new(port: u16) -> io::Result<Self> {
-        // We'll listen to 0.0.0.0, essentially on all interfaces
-        let socket_addr = socket_addr!(unspecified;port);
-
+    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
         // Create a new UDP socket
         let socket = sock::Socket::new(
             sock::Domain::IPV4, 
@@ -116,10 +115,7 @@ pub struct BroadcastWriter {
 }
 
 impl BroadcastWriter {
-    pub fn new(port: u16) -> io::Result<Self> {
-        // Bind at any address, doesn't matter
-        let socket_addr = socket_addr!(unspecified;0);
-
+    pub fn new(socket_addr: net::SocketAddr, port: u16) -> io::Result<Self> {
         // The address to which we're going to send packets
         let broadcast_addr = socket_addr!(broadcast;port).into();
         
@@ -153,10 +149,14 @@ impl BroadcastWriter {
     /// Send a broadcast message
     /// 
     /// Note that this method will panic, if data's length is more than [MTU_SIZE]
-    pub fn send(&mut self, data: &[u8]) -> Result<(), Error> {
+    pub fn send(&mut self, data: &[u8]) -> Result<(), io::Error> {
         assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
-        self.socket.send_to(data, &self.broadcast_addr)
-            .map(|_| ())
+        match self.socket.send_to(data, &self.broadcast_addr) {
+            Ok(bytes) if bytes == data.len() => {
+                Ok(())
+            },
+            _ => Err(io::Error::new(io::ErrorKind::Interrupted, "Unable to send the entire payload"))
+        }
     }
 }
