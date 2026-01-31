@@ -1,6 +1,8 @@
 //! We're using a component-based approach, where packets are constructed using different components. The primary idea is that packets can arrive with
 //! different data
 
+use std::rc::Rc;
+
 use bitcode::{Decode, Encode};
 
 /// An ID of a packet (present on reliable and unreliable-ordered channels)
@@ -10,9 +12,16 @@ pub type PacketSeqId = u32;
 pub type PacketChecksum = u32;
 
 /// The packet data itself
-pub type PacketPayload = Vec<u8>;
+pub type PacketPayload = Rc<Vec<u8>>;
 
-#[derive(Encode, Decode)]
+/// Different kinds of reliability
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reliability {
+    Unreliable,
+    Reliable
+}
+
+#[derive(Clone, Encode, Decode)]
 pub enum UserPacket {
     Unreliable {
         payload: PacketPayload,
@@ -53,6 +62,14 @@ impl UserPacket {
         match self {
             Self::Reliable { seq_id, payload: _ } => Some(*seq_id),
             Self::Unreliable { payload: _ } => None,
+        }
+    }
+    
+    /// Get this packet's reliability value
+    pub fn reliability(&self) -> Reliability {
+        match self {
+            Self::Reliable { seq_id: _, payload: _ } => Reliability::Reliable,
+            Self::Unreliable { payload: _ } => Reliability::Unreliable,
         }
     }
 }
