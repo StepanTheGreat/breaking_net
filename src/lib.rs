@@ -13,11 +13,10 @@ mod socket;
 /// a network interface.
 pub const MTU_SIZE: usize = 1200;
 
-/// The size of an IP header
-pub(crate) const HEADER_IP_SIZE: usize = 24;
-
-/// The total header size of a single packet
-pub(crate) const HEADER_PACKET_SIZE: usize = HEADER_IP_SIZE + (4 + 4 + 1 + 2); // seq_id + hash + kind + data_len
+/// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff. 
+/// 
+/// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely
+pub(crate) const MTU_SIZE_PRIVATE: usize = MTU_SIZE+50;
 
 /// Super tiny macro for constructing [SocketAddr] values
 ///

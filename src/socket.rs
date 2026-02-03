@@ -2,11 +2,84 @@ use socket2 as sock;
 use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
 
 use crate::{
-    MTU_SIZE,
-    packet::{PacketCrateBuilder, PacketSeqId, Reliability, UserPacket},
+    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
 };
 
 const MAX_HEARTBEAT: f32 = 5.0;
+
+// Resend every 2 frames
+const RESEND_TIMER: f32 = 1.0/15.0;
+
+/// This small module implements utilities for testing different network environments. The main goal is to be able to "reproduce"
+/// network instability, to workaround those in tests (because tests are in most cases run locally)
+#[cfg(feature = "stress_testing")]
+mod stress_testing {
+    use std::cell::{Cell, LazyCell, RefCell};
+
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
+
+    thread_local! {
+        static PACKET_LOSS_CHANCE: Cell<f32> = Cell::default();
+    
+        static PACKET_DUBLICATION_CHANCE: Cell<f32> = Cell::default();
+    
+        static PACKET_CORRUPTION_CHANCE: Cell<f32> = Cell::default();
+    
+        static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(|| 
+            RefCell::new(rand::rngs::SmallRng::from_os_rng())
+        );
+    }
+
+    fn assert_chance_valid(chance: f32) {
+        assert!(
+            (0.0..=1.0).contains(&chance), "The chance percentage must be between 0 and 1"
+        );
+    }
+
+    /// Set the thread-local packet loss chance 
+    pub fn set_packet_loss_chance(new_chance: f32) {
+        assert_chance_valid(new_chance);
+        PACKET_LOSS_CHANCE.set(new_chance);
+    }
+
+    /// Set the thread-local packet dublication chance 
+    pub fn set_packed_dublication_chance(new_chance: f32) {
+        assert_chance_valid(new_chance);
+        PACKET_DUBLICATION_CHANCE.set(new_chance);
+    }
+
+    /// Set the thread-local packet dublication chance 
+    pub fn set_packed_corruption_chance(new_chance: f32) {
+        assert_chance_valid(new_chance);
+        PACKET_CORRUPTION_CHANCE.set(new_chance);
+    }
+
+
+    /// Generate a random number between 0 and 1, and check if it's less than the provided chance (thus returning `true`) 
+    fn satisfies_random_chance(chance: f32) -> bool {
+        RNG_STATE.with(|rng| 
+            rng.borrow_mut().random_range(0.0..=1.0) <= chance
+        )
+    }
+
+    /// Should this next packet get corrupted?
+    pub(crate) fn should_corrupt_packet() -> bool {
+        satisfies_random_chance(PACKET_CORRUPTION_CHANCE.get())
+    }
+
+    /// Should this next packet get lost?  
+    pub(crate) fn should_lose_packet() -> bool {
+        satisfies_random_chance(PACKET_LOSS_CHANCE.get())
+    }
+
+    /// Should this next packet be dublicated?
+    pub(crate) fn should_dublicate_packet() -> bool {
+        satisfies_random_chance(PACKET_DUBLICATION_CHANCE.get())
+    }
+}
+
+#[cfg(feature = "stress_testing")]
+pub use stress_testing::*;
 
 /// A super simple sequence counter, that just increments and wrap arounds sequence ids
 struct SequenceCounter(PacketSeqId);
@@ -48,10 +121,30 @@ impl SimpleSock {
 
     /// Send some data to the provided address
     pub fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
+
+        // If we're stress testing - we'll just not do anything (like if the packet got naturally lost) 
+        #[cfg(feature = "stress_testing")]
+        if should_lose_packet() {
+            return Ok(());
+        }
+
         match self.socket.send_to(data, &to.into()) {
             Ok(written) if written == data.len() => Ok(()),
             _ => Err(io::Error::other("Unable to send the packet")),
+        }?;
+
+        // If this packet must be dublicated - we'll just send it twice. 
+        #[cfg(feature = "stress_testing")]
+        if should_dublicate_packet() {
+
+            // For the sake of simplicity we're going to dublicate code here.
+            match self.socket.send_to(data, &to.into()) {
+                Ok(written) if written == data.len() => Ok(()),
+                _ => Err(io::Error::other("Unable to send the packet")),
+            }?;
         }
+
+        Ok(())
     }
 
     /// Receive a packet from anyone
@@ -66,6 +159,12 @@ impl SimpleSock {
                 // Nothing to do
                 if read == 0 {
                     return None;
+                }
+
+                // If we're stress testing and the packet is supposed to be corrupted - we'll just reverse the received message
+                #[cfg(feature = "stress_testing")]
+                if should_corrupt_packet() {
+                    buff[0..read].reverse();
                 }
 
                 Some((&self.buffer[0..read], addr.as_socket()?))
@@ -132,6 +231,14 @@ impl QueuedPacket {
             Self::Unreliable(packet) => packet
         }
     }
+
+    /// Update this packet's timer
+    fn set_timer(&mut self, new_time: f32) {
+        match self {
+            Self::Reliable { timer, packet: _ } => {*timer = new_time },
+            _ => {}
+        }
+    }
 }
 
 struct PacketQueue {
@@ -173,13 +280,17 @@ struct SocketConnection {
     /// Packets to send with their respected decrementing timers
     packet_queue: PacketQueue,
 
-    acknowledged: HashSet<PacketSeqId>
+    /// Sequence IDs of packets that were sent from this connection
+    self_acknowledged: HashSet<PacketSeqId>,
+
+    /// Sequence IDs that were received from the other end
+    other_acknowledged: HashSet<PacketSeqId>,
 }
 
 impl SocketConnection {
     fn new(to: net::SocketAddr) -> Self {
         let packets_per_second = 100;
-        let max_transfer_unit = MTU_SIZE;
+        let max_transfer_unit = MTU_SIZE_PRIVATE;
 
         Self {
             to,
@@ -191,7 +302,8 @@ impl SocketConnection {
 
             packet_queue: PacketQueue::new(),
 
-            acknowledged: HashSet::with_capacity(10)
+            self_acknowledged: HashSet::new(),
+            other_acknowledged: HashSet::new()
         }
     }
 
@@ -229,38 +341,116 @@ impl SocketConnection {
         // For each acknowledged ID
         for ack in acks.iter().copied() {
             // Add it to our acknowledged list
-            self.acknowledged.insert(ack);
+            self.self_acknowledged.insert(ack);
         }
     }
 
     fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
-        todo!();
+        let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
 
-        let mut candidates = Vec::with_capacity(self.packet_queue.queue.len());
+        // We're going to go from back to front
+        for ind in (0..self.packet_queue.queue.len()).rev() {
 
-        // First we're going to remove all packets that have been acknowledged
-        self.packet_queue.queue.retain_mut(|packet| {
-            !matches!(packet.sequence_id(), Some(seq_id) if self.acknowledged.contains(&seq_id))
-        });
-        
-        // For each packet we're going to simply update them and if ready put in the candidate list
-        for queued_packet in self.packet_queue.queue.iter_mut() {
-            queued_packet.tick(dt);
+            // First we're going to update it
+            self.packet_queue.queue[ind].tick(dt);
 
-            if queued_packet.is_ready() {
-                candidates.push(queued_packet.clone());
+            // Then clone it
+            let packet = self.packet_queue.queue[ind].clone();
+
+            // If the packet is both acknowledged and ready - remove it from the queue
+            if !( matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) || !packet.is_ready() ) {
+                self.packet_queue.queue.remove(ind);
+            }
+
+            // And if ready - add to the candidate list
+            if packet.is_ready() {
+                candidates.push_front(packet);
             }
         }
+
+        let mut cant_fit_stack = Vec::new();
 
         // How many packets can we even send?
         let mut available_packets = (
             self.packets_per_second as f32 * dt.clamp(0.0, 1.0) // No matter the delta here, we're not going to send more than our PPS in a single second 
         ) as usize;
 
-        // TODO: Build packets and send them
+        // While we have some available packet slots
+        while available_packets > 0 {
 
-        // Don't forget to clear the acknowledged list
-        self.acknowledged.clear();
+            // While the candidate list is not empty
+            while !candidates.is_empty() {
+
+                // Extract the packet
+                let packet = candidates.pop_front().unwrap();
+    
+                // If our crate can fit our packet - put it
+                if self.crate_builder.can_fit(packet.size()) {
+
+                    // If our packet is unacknowledged - we're going to reset its timer
+                    if let Some(seq_id) = packet.sequence_id() {
+                        if self.other_acknowledged.contains(&seq_id) {
+                            continue;
+                        }
+
+                        // Find it and reset its timer
+                        self.packet_queue.queue.iter_mut()
+                            .find(|p| matches!(p.sequence_id(), Some(id) if id == seq_id))
+                            .unwrap()
+                            .set_timer(RESEND_TIMER);
+                    }
+                    
+                    // Consume and push it
+                    self.crate_builder.put_user_packet(packet.consume());
+
+                } else {
+                    // In any other case - put it in the for-later stack
+                    cant_fit_stack.push(packet);
+                }
+
+            }
+
+            // Now that we fit all our available packets - let's try to fit some acknowledgments
+
+            // While there are any acknowledgments and our crate can fit some
+            while !self.other_acknowledged.is_empty() && self.crate_builder.available_ack_slots() > 0 {
+                
+                // Take the first one (not in order)
+                let seq_id = self.other_acknowledged.iter().next().copied().unwrap();
+                
+                // Remove it (thus marking it as acknowledged)
+                self.other_acknowledged.remove(&seq_id);
+
+                // Then put it into the crate
+                self.crate_builder.put_acknowledgments(&[seq_id]);
+            }
+
+            // Finally, our crate is ready to go. All we need to do is build and send it
+            let data = self.crate_builder.build();
+            let _ = socket.send_to(data, self.to);
+
+            // Decrement the amount of packets we got
+            available_packets -= 1;
+
+            // Because we'll have some packets that we couldn't fit - we're going to put them back onto the candidate list
+            while let Some(packet) = cant_fit_stack.pop() {
+                candidates.push_front(packet);
+            }
+        }
+
+        // If after all this we STILL have packets to send - we're going to send them next frame
+        while let Some(packet) = candidates.pop_back() {
+            
+            // If our packet is un-acknowledged - we're not adding it back on the queue, since it's already there
+            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) {
+                continue;
+            }
+
+            self.packet_queue.queue.push_front(packet);
+        }
+
+        // Don't forget to clear the acknowledged list of our packets
+        self.self_acknowledged.clear();
     }
 }
 
@@ -303,6 +493,8 @@ impl Socket {
 
     /// Send a packet to the provided address
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
+        assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
+
         self.connections.get_mut(to).unwrap()
             .queue_packet(how, data.to_owned());
     }

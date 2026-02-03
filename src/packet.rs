@@ -145,6 +145,11 @@ impl PacketCrateBuilder {
         self.size += size;
     }
 
+    /// How many acknowledgments can this crate fit?
+    pub fn available_ack_slots(&self) -> usize {
+        self.free_space() / size_of::<PacketSeqId>()
+    }
+
     /// Clear this packet crate for reusability
     pub fn clear(&mut self) {
         self.acknowledgments.as_mut().unwrap().clear();
