@@ -15,7 +15,7 @@ pub type PacketChecksum = u32;
 pub type PacketPayload = Rc<Vec<u8>>;
 
 /// Different kinds of reliability
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reliability {
     Unreliable,
     Reliable
@@ -70,6 +70,14 @@ impl UserPacket {
         match self {
             Self::Reliable { seq_id: _, payload: _ } => Reliability::Reliable,
             Self::Unreliable { payload: _ } => Reliability::Unreliable,
+        }
+    }
+
+    /// Consume this packet's payload. This will return [None] if it still has active references
+    pub fn consume_payload(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Reliable { seq_id: _, payload } => Rc::into_inner(payload),
+            Self::Unreliable { payload } => Rc::into_inner(payload)
         }
     }
 }

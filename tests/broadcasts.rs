@@ -1,6 +1,6 @@
 use std::net;
 
-use breaking_net::{BroadcastListener, BroadcastWriter, socket_addr};
+use breaking_net::*;
 
 const PORT: u16 = 5555;
 const LISTENER_ADDR: net::SocketAddr = socket_addr!(unspecified; PORT);

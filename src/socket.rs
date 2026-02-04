@@ -1,8 +1,8 @@
 use socket2 as sock;
-use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
+use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, os::unix::net::SocketAddr, rc::Rc};
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
+    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
 };
 
 const MAX_HEARTBEAT: f32 = 5.0;
@@ -261,6 +261,12 @@ impl PacketQueue {
     }
 }
 
+pub struct ReceivedPacket {
+    pub data: Vec<u8>, 
+    pub reliability: Reliability,
+    pub sender: net::SocketAddr
+}
+
 struct SocketConnection {
     /// The connection is directed to
     to: net::SocketAddr,
@@ -303,7 +309,7 @@ impl SocketConnection {
             packet_queue: PacketQueue::new(),
 
             self_acknowledged: HashSet::new(),
-            other_acknowledged: HashSet::new()
+            other_acknowledged: HashSet::new(),
         }
     }
 
@@ -333,19 +339,20 @@ impl SocketConnection {
     }
 
     /// Acknowledgments have been received on this connection
-    fn acknowledgments_received(&mut self, acks: &[PacketSeqId]) {
+    fn own_acknowledgments_received(&mut self, acks: &[PacketSeqId]) {
         if acks.is_empty() {
             return;
         }
 
-        // For each acknowledged ID
-        for ack in acks.iter().copied() {
-            // Add it to our acknowledged list
-            self.self_acknowledged.insert(ack);
-        }
+        self.self_acknowledged.extend(acks);
     }
 
-    fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
+    fn other_acknowledgment_received(&mut self, ack: PacketSeqId) {
+        self.other_acknowledged.insert(ack);
+    }
+    
+    /// A separate polling method that specialises in sending packets
+    fn poll_send(&mut self, socket: &mut SimpleSock, dt: f32) {
         let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
 
         // We're going to go from back to front
@@ -389,7 +396,7 @@ impl SocketConnection {
 
                     // If our packet is unacknowledged - we're going to reset its timer
                     if let Some(seq_id) = packet.sequence_id() {
-                        if self.other_acknowledged.contains(&seq_id) {
+                        if self.self_acknowledged.contains(&seq_id) {
                             continue;
                         }
 
@@ -452,6 +459,11 @@ impl SocketConnection {
         // Don't forget to clear the acknowledged list of our packets
         self.self_acknowledged.clear();
     }
+    
+    fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
+        // Then send our own
+        self.poll_send(socket, dt);
+    }
 }
 
 pub enum SocketEvent {
@@ -464,9 +476,11 @@ pub enum SocketEvent {
 }
 
 pub struct Socket {
-    socket: sock::Socket,
+    socket: SimpleSock,
     addr: net::SocketAddr,
     connections: HashMap<net::SocketAddr, SocketConnection>,
+
+    recv_buffer: VecDeque<ReceivedPacket>
 }
 
 impl Socket {
@@ -478,11 +492,14 @@ impl Socket {
         };
 
         let socket = sock::Socket::new(domain, sock::Type::DGRAM, Some(sock::Protocol::UDP))?;
+        let socket = SimpleSock::new(socket, MTU_SIZE_PRIVATE);
 
         Ok(Self {
             socket,
             addr,
             connections: HashMap::with_capacity(2),
+
+            recv_buffer: VecDeque::new()
         })
     }
 
@@ -491,11 +508,67 @@ impl Socket {
         self.connections.contains_key(to)
     }
 
+    /// Get this socket's address
+    pub fn addr(&self) -> net::SocketAddr {
+        self.addr
+    }
+
     /// Send a packet to the provided address
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
         assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
         self.connections.get_mut(to).unwrap()
             .queue_packet(how, data.to_owned());
+    }
+
+    /// Poll this socket thus updating its inner receive buffer and sending data
+    pub fn poll(&mut self, dt: f32) {
+        assert!(dt >= 0.0);
+
+        // We're going to collect all packets received by this socket
+        while let Some((data, sender)) = self.socket.recv_from() {
+
+            // If it's decodable
+            if let Ok((acks, packets)) = bitcode::decode::<PacketCrate>(data) {
+
+                // Check if we have a connection with this packet
+                let mut connection = self.connections.get_mut(&sender);
+
+                // If this is a packet from a known connection - let it mark all the acknowledgments it needs
+                if connection.is_some() {
+                    connection.as_mut().unwrap().own_acknowledgments_received(&acks);
+                }
+
+                // Now we're going to iterate every single packet
+                for packet in packets {
+                    
+                    // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
+                    if connection.is_some() && packet.sequence_id().is_some() {
+                        connection.as_mut().unwrap().other_acknowledgment_received(packet.sequence_id().unwrap());
+                    }
+
+                    let reliability = packet.reliability();
+
+                    // TODO: No deduplication logic here
+
+                    // Finally, add it to our queue
+                    self.recv_buffer.push_back(ReceivedPacket { 
+                        data: packet.consume_payload().unwrap(), 
+                        reliability, 
+                        sender 
+                    });
+                }
+            }
+        }
+
+        // Now, we're going to poll each connection individually as well
+        for (_, connection) in self.connections.iter_mut() {
+            connection.poll(&mut self.socket, dt);
+        }
+    }
+
+    /// Check if we got a packet
+    pub fn recv_from(&mut self) -> Option<ReceivedPacket> {
+        self.recv_buffer.pop_front()
     }
 }

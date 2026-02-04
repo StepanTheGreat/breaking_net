@@ -8,6 +8,9 @@ mod crc32;
 mod packet;
 mod socket;
 
+pub use socket::Socket;
+pub use packet::Reliability;
+
 /// The maximum transport unit for our packets. I'm using a much lower number here to avoid
 /// fragmentation on most networks, though usually you're supposed to query it directly from
 /// a network interface.
