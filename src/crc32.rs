@@ -5,6 +5,9 @@
 /// The constantly generated CRC32 table
 const CRC32_TABLE: [u32; 256] = crc32_table();
 
+/// The length of the CRC32 signature (it's a 4 byte integer)
+pub const CRC32_SIG_LEN: usize = 4;
+
 /// We're going to make a constant function to generate a table of precomputed CRC32 outputs
 /// for each possible byte value (256 different possible combinations)
 const fn crc32_table() -> [u32; 256] {

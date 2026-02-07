@@ -1,8 +1,8 @@
-use socket2 as sock;
 use std::io;
 use std::net;
 
 use crate::socket::SimpleSock;
+use crate::socket::SockSettings;
 
 mod crc32;
 mod packet;
@@ -10,6 +10,13 @@ mod socket;
 
 pub use socket::Socket;
 pub use packet::Reliability;
+
+#[cfg(feature = "stress_testing")]
+pub use socket::{
+    set_packed_corruption_chance,
+    set_packet_loss_chance,
+    set_packed_dublication_chance,
+};
 
 /// The maximum transport unit for our packets. I'm using a much lower number here to avoid
 /// fragmentation on most networks, though usually you're supposed to query it directly from
@@ -56,23 +63,11 @@ pub struct BroadcastListener {
 }
 
 impl BroadcastListener {
-    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
-        // Create a new UDP socket
-        let socket = sock::Socket::new(
-            sock::Domain::IPV4,
-            sock::Type::DGRAM,
-            Some(sock::Protocol::UDP),
-        )?;
-
-        // Make it non-blocking
-        socket.set_nonblocking(true).unwrap();
-        // Allow address reuse (for multiple broadcast listeners on the same port)
-        socket.set_reuse_address(true).unwrap();
-
-        // Bind it to our address
-        socket.bind(&socket_addr.into())?;
-
-        let socket = SimpleSock::new(socket, MTU_SIZE);
+    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {        
+        let socket = SimpleSock::new_ex(socket_addr, MTU_SIZE, SockSettings {
+            reuses_address: true,
+            ..Default::default()
+        })?;
 
         Ok(Self { socket })
     }
@@ -106,24 +101,11 @@ impl BroadcastWriter {
         // The address to which we're going to send packets
         let broadcast_addr = socket_addr!(broadcast;port).into();
 
-        // Create a new UDP socket
-        let socket = sock::Socket::new(
-            sock::Domain::IPV4,
-            sock::Type::DGRAM,
-            Some(sock::Protocol::UDP),
-        )?;
-
-        // Allow it to send broadcasts
-        let _ = socket.set_broadcast(true);
-
-        // Make it non-blocking
-        let _ = socket.set_nonblocking(true);
-
-        // Bind it to our socket address
-        socket.bind(&socket_addr.into())?;
-
         // The capacity is at zero, since we're not going to receive anything
-        let socket = SimpleSock::new(socket, 0);
+        let socket = SimpleSock::new_ex(socket_addr, 0, SockSettings {
+            broadcaster: true,
+            ..Default::default()
+        })?;
 
         Ok(Self {
             socket,

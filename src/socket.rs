@@ -1,8 +1,8 @@
 use socket2 as sock;
-use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, os::unix::net::SocketAddr, rc::Rc};
+use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
+    MTU_SIZE, MTU_SIZE_PRIVATE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
 };
 
 const MAX_HEARTBEAT: f32 = 5.0;
@@ -97,36 +97,84 @@ impl SequenceCounter {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct SockSettings {
+    pub broadcaster: bool,
+    pub reuses_address: bool
+}
+
 /// A simplified socket structure which directly handles buffers, reading and so on
 pub struct SimpleSock {
     /// The socket itself
     socket: sock::Socket,
 
+    addr: net:: SocketAddr,
+
     /// The receive buffer
-    buffer: Box<[u8]>,
+    recv_buffer: Box<[u8]>,
+
+    send_buffer: Vec<u8>
 }
 
 impl SimpleSock {
-    pub fn new(socket: sock::Socket, capacity: usize) -> Self {
-        Self {
+    pub fn new_ex(addr: net::SocketAddr, capacity: usize, settings: SockSettings) -> io::Result<Self> {
+        
+        let domain = if addr.is_ipv4() {
+            sock::Domain::IPV4
+        } else {
+            sock::Domain::IPV6
+        };
+
+        // Create a new socket
+        let socket = sock::Socket::new(domain, sock::Type::DGRAM, Some(sock::Protocol::UDP))?;
+
+        socket.set_nonblocking(true)?;
+
+        // Apply our options
+        socket.set_broadcast(settings.broadcaster)?;
+        socket.set_reuse_address(settings.reuses_address)?;
+
+        // Bind it to the provided address
+        socket.bind(&addr.into())?;
+
+        let addr = socket.local_addr()
+            .expect("The socket is bound")
+            .as_socket()
+            .unwrap();
+
+        Ok(Self {
             socket,
-            buffer: vec![0u8; capacity].into_boxed_slice(),
-        }
+            addr,
+            recv_buffer: vec![0u8; capacity].into_boxed_slice(),
+            send_buffer: Vec::with_capacity(capacity)
+        })
     }
 
-    /// Get a read reference to the underlying socket
-    pub fn socket(&self) -> &sock::Socket {
-        &self.socket
+    pub fn new(addr: net::SocketAddr, capacity: usize) -> io::Result<Self> {
+        Self::new_ex(addr, capacity, SockSettings::default())
     }
 
     /// Send some data to the provided address
     pub fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
-
         // If we're stress testing - we'll just not do anything (like if the packet got naturally lost) 
         #[cfg(feature = "stress_testing")]
         if should_lose_packet() {
             return Ok(());
         }
+
+        // Copy the message to our buffer
+        self.send_buffer.clear();
+        self.send_buffer.extend_from_slice(data);
+        
+        // Compute the CRC signature
+        let crc = crc32(&self.send_buffer);
+
+        // Add it to the end of the message
+        self.send_buffer.extend_from_slice(
+            &crc.to_be_bytes()
+        );
+
+        let data= &self.send_buffer;
 
         match self.socket.send_to(data, &to.into()) {
             Ok(written) if written == data.len() => Ok(()),
@@ -151,13 +199,13 @@ impl SimpleSock {
     pub fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)> {
         // Casting between MaybeUninit primitive types here is safe
         let buff = unsafe {
-            std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(self.buffer.as_mut())
+            std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(self.recv_buffer.as_mut())
         };
 
         match self.socket.recv_from(buff) {
             Ok((read, addr)) => {
-                // Nothing to do
-                if read == 0 {
+                // We received less bytes than our CRC signature 
+                if read < CRC32_SIG_LEN {
                     return None;
                 }
 
@@ -167,10 +215,22 @@ impl SimpleSock {
                     buff[0..read].reverse();
                 }
 
-                Some((&self.buffer[0..read], addr.as_socket()?))
+                // Let's compute the CRC signature from our 
+                let crc = crc32(&self.recv_buffer[..read-CRC32_SIG_LEN]);
+                let crc_bytes: [u8; CRC32_SIG_LEN] = crc.to_be_bytes();
+                
+                if &self.recv_buffer[read-CRC32_SIG_LEN..read] != &crc_bytes {
+                    return None;
+                }
+
+                Some((&self.recv_buffer[..read-CRC32_SIG_LEN], addr.as_socket()?))
             }
             Err(_) => None,
         }
+    }
+
+    pub fn addr(&self) -> net::SocketAddr {
+        self.addr
     }
 
     /// Does this socket have any packets?
@@ -280,6 +340,9 @@ struct SocketConnection {
     /// How much time has passed since the last heartbeat? This must be reset whenever we receive either an explicit
     last_heartbeat: f32,
 
+    /// How many crates were sent during the last polling operation
+    sent_crates: usize,
+
     /// The builder with which we'll be building all packets
     crate_builder: PacketCrateBuilder,
 
@@ -301,6 +364,7 @@ impl SocketConnection {
         Self {
             to,
             last_heartbeat: MAX_HEARTBEAT,
+            sent_crates: 0,
 
             packets_per_second,
             max_transfer_unit,
@@ -354,6 +418,7 @@ impl SocketConnection {
     /// A separate polling method that specialises in sending packets
     fn poll_send(&mut self, socket: &mut SimpleSock, dt: f32) {
         let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
+        self.sent_crates = 0;
 
         // We're going to go from back to front
         for ind in (0..self.packet_queue.queue.len()).rev() {
@@ -384,6 +449,11 @@ impl SocketConnection {
 
         // While we have some available packet slots
         while available_packets > 0 {
+
+            // If there are no packets nor acks to send - we'll stop right here
+            if candidates.is_empty() && self.other_acknowledged.is_empty() {
+                break;
+            }
 
             // While the candidate list is not empty
             while !candidates.is_empty() {
@@ -439,6 +509,9 @@ impl SocketConnection {
             // Decrement the amount of packets we got
             available_packets -= 1;
 
+            // Increment the amount of crates we sent
+            self.sent_crates += 1;
+
             // Because we'll have some packets that we couldn't fit - we're going to put them back onto the candidate list
             while let Some(packet) = cant_fit_stack.pop() {
                 candidates.push_front(packet);
@@ -464,6 +537,10 @@ impl SocketConnection {
         // Then send our own
         self.poll_send(socket, dt);
     }
+
+    fn sent_crates(&self) -> usize {
+        self.sent_crates
+    }
 }
 
 pub enum SocketEvent {
@@ -477,27 +554,23 @@ pub enum SocketEvent {
 
 pub struct Socket {
     socket: SimpleSock,
-    addr: net::SocketAddr,
     connections: HashMap<net::SocketAddr, SocketConnection>,
+
+    /// The amount of crates that were received in a polling session
+    recv_crates: usize,
 
     recv_buffer: VecDeque<ReceivedPacket>
 }
 
 impl Socket {
     pub fn new(addr: net::SocketAddr) -> io::Result<Self> {
-        let domain = if addr.is_ipv4() {
-            sock::Domain::IPV4
-        } else {
-            sock::Domain::IPV6
-        };
-
-        let socket = sock::Socket::new(domain, sock::Type::DGRAM, Some(sock::Protocol::UDP))?;
-        let socket = SimpleSock::new(socket, MTU_SIZE_PRIVATE);
+        let socket = SimpleSock::new(addr, MTU_SIZE_PRIVATE)?;
 
         Ok(Self {
             socket,
-            addr,
             connections: HashMap::with_capacity(2),
+
+            recv_crates: 0,
 
             recv_buffer: VecDeque::new()
         })
@@ -510,20 +583,24 @@ impl Socket {
 
     /// Get this socket's address
     pub fn addr(&self) -> net::SocketAddr {
-        self.addr
+        self.socket.addr()
     }
 
     /// Send a packet to the provided address
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
         assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
-        self.connections.get_mut(to).unwrap()
+        self.connections
+            .entry(*to)
+            .or_insert(SocketConnection::new(*to))
             .queue_packet(how, data.to_owned());
     }
 
-    /// Poll this socket thus updating its inner receive buffer and sending data
+    /// Poll this socket thus updating its inner receive buffer and sending data. 
     pub fn poll(&mut self, dt: f32) {
         assert!(dt >= 0.0);
+
+        self.recv_crates = 0;
 
         // We're going to collect all packets received by this socket
         while let Some((data, sender)) = self.socket.recv_from() {
@@ -558,6 +635,8 @@ impl Socket {
                         sender 
                     });
                 }
+
+                self.recv_crates += 1;
             }
         }
 
@@ -567,8 +646,29 @@ impl Socket {
         }
     }
 
+    /// How many crates were received during the last poll operation
+    pub fn received_crates(&self) -> usize {
+        self.recv_crates
+    }
+
+    /// Count the total amount of sent crates to a target
+    pub fn sent_crates(&self) -> usize {
+        self.connections.iter()
+            .map(|(_, c)| c.sent_crates())
+            .sum()
+    }
+
     /// Check if we got a packet
     pub fn recv_from(&mut self) -> Option<ReceivedPacket> {
         self.recv_buffer.pop_front()
+    }
+
+    pub fn has_packets(&self) -> bool {
+        !self.recv_buffer.is_empty()
+    }
+
+    /// How many packets are available
+    pub fn packets(&self) -> usize {
+        self.recv_buffer.len()
     }
 }

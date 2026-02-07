@@ -9,7 +9,7 @@ use bitcode::{Decode, Encode};
 pub type PacketSeqId = u32;
 
 /// The checksum of the packet present everywhere (allows verirying if a packet isn't corrupted)
-pub type PacketChecksum = u32;
+pub type PacketChecksum = [u8; 4];
 
 /// The packet data itself
 pub type PacketPayload = Rc<Vec<u8>>;
@@ -105,7 +105,7 @@ pub struct PacketCrateBuilder {
 pub type PacketCrate = (Vec<u32>, Vec<UserPacket>);
 
 impl PacketCrateBuilder {
-    /// The initial size of the packet crate
+    /// The initial size of the packet crate (2 vector lengths +)
     const INIT_SIZE: usize = size_of::<u32>() * 2;
 
     pub fn new(mtu: usize) -> Self {

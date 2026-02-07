@@ -24,5 +24,43 @@ One of the main priorities of this protocol is to be able to:
 4. Implement some sort of congestion control. While not super important - being able to analyze the network and adapt to it is super beneficial. One obvious
    example would be adapting to its MTU size, which in turn can lead to better batching results. Packet rate can be adapted depending on the status of the 
    network. Overall, a good feature, but not the priority for now.
+5. Support basic levels of encryption. This is a responsibility of the protocol, because:
+   1. User-implemented encryption wouldn't encrypt crate metadata
+   2. Encrypting individual packets would explode the total batched size of said packets.
+   3. Decrypting each packet, instead of a single crate would be marginally slower
+
+   For these reasons, encryption must be implemented on the protocol's level. This in turn might change the way some interactions are implemented (for example
+   some connection must be first established to be able to send packets to an unknown socket)
 
 TODO: Explain more the innerworkings of the protocol (how it received packets, acknowledges them, sends them and so on)
+
+## Implementation
+
+### Socket
+A socket is simply an abstraction over a UDP socket that has a few differences:
+1. It's by default non-blocking. All operations on them are non-blocking, which makes it MUCH more convenient for independent applications.
+   It instead requires manual polling from the user, with supplied delta time. Using this delta it can:
+      1. Update its inner timers (for example resend timers)
+      2. Understand its limits (for example how many packets it can send per a single poll)
+2. It has a maximum MTU (Maximum Transport Unit) which doesn't support any fragmentation (for now). Under the hood, there are 2 levels of MTU:
+   - Public (user MTU)
+   - Private (protocol MTU)
+
+   The protocol's MTU is just slighly larger to accomodate for headers and other stuff. The reason why there's a difference, is because having a common MTU
+   would be confusing. The user using the entire capacity of the same MTU would literally mean that the protocol wouldn't have any space for its own metadata.
+   That's why there are slightly different numbers, exactly for that reason.
+3. It by default batches multiple smaller packets into larger **crates**. **Crates** are protocol-level packets that simply include lists of metadata
+   (like acknowledgments and smaller packets). This achieves a few things:
+   1. It reduces the overall packet rate (which in turn doesn't overwhelm the network as much)
+   2. It reduces the chances of packet loss (compare the chances of reliably receiving 4 different packets, over receiving a single one)
+   
+   Because PPS (Packets Per Second) metric is customizable - our sockets only try to fit as much data as possible into the available PPS during the poll (thanks
+   to **delta time**). 
+
+   The way it works, is: at each poll, our socket is going to calculate the amount of packets it can send (for example, with 120PPS and 30TPS, per single tick we
+   can send up to 4 packets in total). Then, it's going to iterate the queue of packets. For each packet, it checks if it can fit into a crate. If it can - it
+   goes directly there, increasing its overall size. In any other case it goes into the `cant_fit` queue, packets in which will get re-added later.
+
+   After we're done with packets - we're going to try fit acknowledgments. Absolutely the same way.
+
+   Note that we always first prioritize packets, and only THEN acknowledgments. It's absolutely possible for us to never send any acknowledgments at all, if the remaining packet size is always less than our size of an acknowledgment (though theoretically we should be able to send at least 2 per packet, thanks to our private MTU size increase). 
