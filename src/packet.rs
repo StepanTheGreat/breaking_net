@@ -45,7 +45,7 @@ impl UserPacket {
 
     /// A conservative estimate of the total packet size
     pub fn size(&self) -> usize {
-        match self {
+        let size = match self {
             Self::Reliable { seq_id: _, payload } => {
                 // Sequence ID + Payload length + payload itself
                 size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
@@ -54,7 +54,11 @@ impl UserPacket {
                 // Payload length + payload itself
                 size_of::<u32>() + payload.len()
             }
-        }
+        };
+        
+        let tag_size = 1;
+
+        tag_size + size
     }
 
     /// Get a sequence id of this packet, if present

@@ -17,6 +17,10 @@ macro_rules! poll_socks {
 
 #[test]
 fn test_basic_sockets() {
+
+    // Before each test we should ensure to first reset the stress environment settings
+    reset_stress_environment();
+
     let mut sock_a = Socket::new(ADDR_A).unwrap();
     let mut sock_b = Socket::new(ADDR_B).unwrap();
 
@@ -81,23 +85,95 @@ fn test_basic_sockets() {
 
 #[test]
 fn test_corruption_detection() {
+    reset_stress_environment();
+
     let mut sock_a = Socket::new(ADDR_A).unwrap();
     let mut sock_b = Socket::new(ADDR_B).unwrap();
 
     let msg = b"Hello";
     let rel = Reliability::Unreliable;
 
+    // Send our message
+    sock_a.send_to(&sock_b.addr(), msg, rel);
+
+    // Poll our sockets
+    poll_socks!(DT, sock_a, sock_b);
+
+    // Ensure that our socket DOESN'T receive that packet
+    assert!(sock_b.recv_from().is_some());
+
     // Guarantee corruption
     set_packed_corruption_chance(1.0);
 
     // Send our message
-    sock_a.send_to(&ADDR_B, msg, rel);
+    sock_a.send_to(&sock_b.addr(), msg, rel);
 
     // Poll our sockets
     poll_socks!(DT, sock_a, sock_b);
 
     // Ensure that our socket DOESN'T receive that packet
     assert!(sock_b.recv_from().is_none());
+}
 
-    set_packed_corruption_chance(0.0);
+#[test]
+fn test_reliable_packets() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    let msg = b"Hello";
+    let rel = Reliability::Reliable;
+
+    // Guarantee packet loss
+    set_packet_loss_chance(1.0);
+
+    // Send our message
+    sock_a.send_to(&sock_b.addr(), msg, rel);
+    
+    // It will fail no matter how many times we're going to resend it
+    for _ in 0..10 {
+        poll_socks!(DT, sock_a, sock_b);
+    }
+    assert!(!sock_b.has_packets());
+
+    // Drop our packet loss
+    set_packet_loss_chance(0.0);
+
+    // Poll as for 10 times
+    poll_socks!(DT*10.0, sock_a, sock_b);
+
+    // Ensure that our socket receives the packet
+   assert!(sock_b.recv_from().is_some());
+
+    // Receive it only once
+    assert!(!sock_b.has_packets());
+}
+
+
+#[test]
+fn test_deduplication_packets() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    let msg = b"Hello";
+    let rel = Reliability::Reliable;
+
+    // Guarantee packet loss
+    set_packed_dublication_chance(1.0);
+
+    // Send our message
+    sock_a.send_to(&sock_b.addr(), msg, rel);
+    
+    // Poll as for 10 times
+    poll_socks!(DT, sock_a, sock_b);
+
+    // Ensure that our socket receives the packet
+    assert!(sock_b.recv_from().is_some());
+
+    // Receive it only once
+    assert!(!sock_b.has_packets());
+
 }

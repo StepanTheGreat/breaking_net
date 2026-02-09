@@ -54,6 +54,13 @@ mod stress_testing {
         PACKET_CORRUPTION_CHANCE.set(new_chance);
     }
 
+    /// Reset the stress-testing environment 
+    pub fn reset_stress_environment() {
+        set_packed_corruption_chance(0.0);
+        set_packed_dublication_chance(0.0);
+        set_packet_loss_chance(0.0);
+    }
+
 
     /// Generate a random number between 0 and 1, and check if it's less than the provided chance (thus returning `true`) 
     fn satisfies_random_chance(chance: f32) -> bool {

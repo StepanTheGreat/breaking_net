@@ -7,6 +7,7 @@ use crate::socket::SockSettings;
 mod crc32;
 mod packet;
 mod socket;
+mod window;
 
 pub use socket::Socket;
 pub use packet::Reliability;
@@ -16,6 +17,7 @@ pub use socket::{
     set_packed_corruption_chance,
     set_packet_loss_chance,
     set_packed_dublication_chance,
+    reset_stress_environment
 };
 
 /// The maximum transport unit for our packets. I'm using a much lower number here to avoid
