@@ -1,16 +1,21 @@
-use std::fmt::{Display, write};
+use std::fmt::Display;
 
 use crate::packet::PacketSeqId;
 
 
 #[cfg(test)] 
+/// For testing we're using 16bit uints because we're testing against std's u128 integer (which in turn can fit up to 8 pages at once, making it
+/// perfect for testing)
 type BitPage = u16;
 
 #[cfg(not(test))]
+/// In development though, it makes more sense to use larger pages, like 64bit uints
 type BitPage = u64;
 
+/// The amount of bits in our bit page
 const PAGE_BITS: usize = BitPage::BITS as _;
 
+/// A super minimal bitset implementation which allows setting bits at arbitrary positions and shifting the entire structure to the right 
 #[derive(Clone)]
 pub struct BitSet {
     pages: Box<[BitPage]>,
@@ -61,65 +66,49 @@ impl BitSet {
     }
 
     /// Shift this structure to the right
-    pub fn shr(&mut self, by: usize) {
+    pub fn shr(&mut self, mut by: usize) {
 
-        // The value with all bits as 1. This allows us to "clear out" sections to which we're going to move our new shifted values
-        let eraser = BitPage::MAX;
+        // When we're shifting pages, we can shift by entire integers at once. This is a pretty slow operation, 
+        if by >= PAGE_BITS {
 
-        // For each set (iterating from the left)
-        for i in (0..self.len).rev() {
+            // By how many pages to shift
+            let shift_pages = by / PAGE_BITS;
 
-            // Get the current page
-            let page = self.pages[i];
+            // Decrement by an entire page
+            by -= shift_pages * PAGE_BITS;
             
-            // The current position in bits
-            let bind = i * PAGE_BITS;
+            // For each page index, starting from 1
+            for ind in (0..self.len).rev() {
+                let new_ind = ind + shift_pages;
 
-            // If the offset is larger than our bit index (meaning that our page will go out of bounds)
-            // In any other case we can safely move it to any position
-            let new_bind = bind+by;
-
-            let page_offset = new_bind % PAGE_BITS;
-
-            // Our new position is page aligned, meaning that we can directly overwrite the previous page 
-            if page_offset == 0 {
-                let new_ind = new_bind / PAGE_BITS;
-
-                // Directly overwrite it
-                self.pages[new_ind] = page;
-            } else {
-                // In any other case we will have to touch multiple pages
-                let new_a_ind = new_bind.div_euclid(PAGE_BITS);
-                let new_b_ind = new_bind.div_ceil(PAGE_BITS);
-
-                if new_a_ind >= self.len {
-                    continue;
-                } 
-
-                // Erase our A page from the left
-                self.pages[new_a_ind] |= eraser << page_offset;
-                self.pages[new_a_ind] ^= eraser << page_offset;
-
-                // Write our new page
-                self.pages[new_a_ind] |= page >> page_offset;
-
-
-                if new_b_ind >= self.len {
+                if new_ind >= self.len {
                     continue;
                 }
 
-                // Repeat for B
-                self.pages[new_b_ind] |= eraser >> (PAGE_BITS-page_offset);
-                self.pages[new_b_ind] ^= eraser >> (PAGE_BITS-page_offset);
+                // Swap it with the page to its left
+                self.pages[new_ind] = self.pages[ind];
+            }
 
-                self.pages[new_b_ind] |= page << (PAGE_BITS-page_offset);
-                
+            // The first pages will simply turn into zeros
+            for ind in 0..shift_pages {
+                self.pages[ind] = 0;
             }
         }
 
-        // When we shift to the left
-        self.pages[0] |= eraser << (PAGE_BITS.saturating_sub(by));
-        self.pages[0] ^= eraser << (PAGE_BITS.saturating_sub(by));
+        // For each set (iterating from the right)
+        for i in (0..self.len).rev() {
+
+            // If it's the last page - simply shift it 
+            if i == self.len-1 {
+                self.pages[i] >>= by;
+            } else {
+                // In any other case we're going to shift our current page onto the right one
+                self.pages[i+1] |= self.pages[i] << (PAGE_BITS-by);
+
+                // And now shift our own page
+                self.pages[i] >>= by;
+            }
+        }
     }
 
     pub fn as_ref(&self) -> &[BitPage] {
@@ -127,47 +116,40 @@ impl BitSet {
     }
 }
 
-impl Display for BitSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for page in self.pages.iter() {
-            write!(f, "{page:016b}")?;
-        }
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::window::BitSet;
+    use crate::window::{BitPage, BitSet, PAGE_BITS};
 
     #[test]
-    fn test_single_bitset() {
-        let mut page: u128 = 0xF4F1748182F917A1293FA11283;
-        let mut bitset = BitSet::new(8);
+    fn test_bitset() {
+        const TEST_PAGES: usize = (u128::BITS as usize) / PAGE_BITS;
 
-        // Load page by page our enormous u128 bitset
-        for ind in 0..8 {
-            bitset.put(ind, (page >> (7-ind)*16) as u16);
-        }
+        // Load our structure
+        let o_page: u128 = 0xF4F1748182F917A1293FA11283;
+        let o_bitset = {   
+            let mut bs = BitSet::new(TEST_PAGES);
 
-        println!("Page:   {page:0128b}");
-        println!("Bitset: {bitset}");
-        println!();
+            // Load page by page our enormous u128 bitset
+            for ind in 0..TEST_PAGES {
+                bs.put(ind, (o_page >> ((TEST_PAGES-1)-ind)*PAGE_BITS) as BitPage);
+            }
 
-        for shift_by in [1, 2, 3, 7, 50, 90] {
-            page = page.unbounded_shr(shift_by);
+            bs
+        };
+
+        // For every shift amount
+        for shift_by in [1, 2, 3, 7, 50, 90, 124] {
+            
+            // Shift our 2 structures
+            let page = o_page.unbounded_shr(shift_by);
+            let mut bitset = o_bitset.clone();
             bitset.shr(shift_by as _);
 
-            println!("Shifting by {shift_by}:");
-            println!("Page:   {page:0128b}");
-            println!("Bitset: {bitset}");
-
-            for ind in 0..8 {
+            // Then compare them page by page
+            for ind in 0..TEST_PAGES {
                 let page_a = bitset.read(ind);
-                let page_b = (page >> (7-ind)*16) as u16;
+                let page_b = (page >> ((TEST_PAGES-1)-ind)*PAGE_BITS) as BitPage;
 
-                println!("{ind} = {page_a:04x} / {page_b:04x} (expected)");
                 assert_eq!(page_a, page_b);
             }
         }
