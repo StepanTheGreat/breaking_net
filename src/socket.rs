@@ -2,13 +2,18 @@ use socket2 as sock;
 use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}
+    MTU_SIZE,
+    MTU_SIZE_PRIVATE, 
+    crc32::{CRC32_SIG_LEN, crc32}, 
+    packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}, 
+    window::SlidingAckWindow
 };
 
-const MAX_HEARTBEAT: f32 = 5.0;
-
-// Resend every 2 frames
+/// Resend every 2 frames
 const RESEND_TIMER: f32 = 1.0/15.0;
+
+/// We'll keep up to 512 packets
+const PACKET_FRAMES: usize = 8;
 
 /// This small module implements utilities for testing different network environments. The main goal is to be able to "reproduce"
 /// network instability, to workaround those in tests (because tests are in most cases run locally)
@@ -344,9 +349,6 @@ struct SocketConnection {
     /// The maximum amount of packets 
     max_transfer_unit: usize,
 
-    /// How much time has passed since the last heartbeat? This must be reset whenever we receive either an explicit
-    last_heartbeat: f32,
-
     /// How many crates were sent during the last polling operation
     sent_crates: usize,
 
@@ -355,6 +357,9 @@ struct SocketConnection {
 
     /// Packets to send with their respected decrementing timers
     packet_queue: PacketQueue,
+
+    /// The sliding window to track received packets
+    ack_window: SlidingAckWindow,
 
     /// Sequence IDs of packets that were sent from this connection
     self_acknowledged: HashSet<PacketSeqId>,
@@ -370,13 +375,13 @@ impl SocketConnection {
 
         Self {
             to,
-            last_heartbeat: MAX_HEARTBEAT,
             sent_crates: 0,
 
             packets_per_second,
             max_transfer_unit,
             crate_builder: PacketCrateBuilder::new(max_transfer_unit),
 
+            ack_window: SlidingAckWindow::new(PACKET_FRAMES),
             packet_queue: PacketQueue::new(),
 
             self_acknowledged: HashSet::new(),
@@ -545,6 +550,16 @@ impl SocketConnection {
         self.poll_send(socket, dt);
     }
 
+    /// Check if the provided packet was already received in this connection
+    pub fn was_received(&self, packet: PacketSeqId) -> bool {
+        !self.ack_window.is_new(packet)
+    }
+
+    /// Mark this packet as received
+    pub fn mark_received(&mut self, packet: PacketSeqId) {
+        self.ack_window.mark(packet);
+    }
+
     fn sent_crates(&self) -> usize {
         self.sent_crates
     }
@@ -615,25 +630,34 @@ impl Socket {
             // If it's decodable
             if let Ok((acks, packets)) = bitcode::decode::<PacketCrate>(data) {
 
-                // Check if we have a connection with this packet
-                let mut connection = self.connections.get_mut(&sender);
+                // Get or make a new socket connection for this packet
+                let connection = self.connections.entry(sender)
+                    .or_insert(SocketConnection::new(sender));
+
+                // TODO: This is probably a horrible idea, since creating a new connection per every new message would be too expensive
 
                 // If this is a packet from a known connection - let it mark all the acknowledgments it needs
-                if connection.is_some() {
-                    connection.as_mut().unwrap().own_acknowledgments_received(&acks);
-                }
+                connection.own_acknowledgments_received(&acks);
 
                 // Now we're going to iterate every single packet
                 for packet in packets {
-                    
+
                     // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
-                    if connection.is_some() && packet.sequence_id().is_some() {
-                        connection.as_mut().unwrap().other_acknowledgment_received(packet.sequence_id().unwrap());
+                    if let Some(seqid) = packet.sequence_id() {
+                        println!("Got a reliable packet!");
+
+                        connection.other_acknowledgment_received(seqid);
+
+                        if connection.was_received(seqid) {
+                            println!("This packet was already received: {seqid}");
+                            continue;
+                        } else {
+                            println!("A new packet was received:        {seqid}");
+                            connection.mark_received(seqid);
+                        }
                     }
 
                     let reliability = packet.reliability();
-
-                    // TODO: No deduplication logic here
 
                     // Finally, add it to our queue
                     self.recv_buffer.push_back(ReceivedPacket { 
