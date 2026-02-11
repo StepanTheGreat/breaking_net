@@ -13,7 +13,7 @@ use crate::{
 const RESEND_TIMER: f32 = 1.0/15.0;
 
 /// We'll keep up to 512 packets
-const PACKET_FRAMES: usize = 8;
+const PACKET_WINDOW_BITS: usize = 512;
 
 /// This small module implements utilities for testing different network environments. The main goal is to be able to "reproduce"
 /// network instability, to workaround those in tests (because tests are in most cases run locally)
@@ -381,7 +381,7 @@ impl SocketConnection {
             max_transfer_unit,
             crate_builder: PacketCrateBuilder::new(max_transfer_unit),
 
-            ack_window: SlidingAckWindow::new(PACKET_FRAMES),
+            ack_window: SlidingAckWindow::new(PACKET_WINDOW_BITS),
             packet_queue: PacketQueue::new(),
 
             self_acknowledged: HashSet::new(),

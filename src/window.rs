@@ -9,17 +9,20 @@ const PAGE_BITS: usize = BitPage::BITS as _;
 #[derive(Clone)]
 pub struct BitSet {
     pages: Box<[BitPage]>,
-    len: usize,
+    bit_len: usize,
 }
 
 impl BitSet {
-    pub fn new(len: usize) -> Self {
-        assert!(len > 0, "A bit array can't have zero frames");
+    pub fn new(bit_len: usize) -> Self {
+        assert!(bit_len > 0, "A bit array can't have zero bits");
 
-        let pages = vec![0; len].into_boxed_slice();
+        // Calculate the amount of pages needed
+        let pages_len = bit_len.div_ceil(PAGE_BITS);
+
+        let pages = vec![0; pages_len].into_boxed_slice();
         
         Self {
-            len,
+            bit_len,
             pages
         }
     }
@@ -47,7 +50,7 @@ impl BitSet {
 
     /// Get the value of the provided bit (indexed by bit index)
     pub fn get(&self, index: usize) -> bool {
-        assert!(index/PAGE_BITS < self.len);
+        assert!(index < self.bit_len());
 
         let offset = index % PAGE_BITS;
 
@@ -56,13 +59,20 @@ impl BitSet {
         ) > 0
     }
 
+    /// The amount of pages this bitset contains (a single page containing multiple bits)
+    pub fn len(&self) -> usize {
+        self.bit_len() / PAGE_BITS
+    }
+
     /// The length of this bitset in bits
     pub fn bit_len(&self) -> usize {
-        self.len * PAGE_BITS
+        self.bit_len
     }
 
     /// Shift this structure to the right
     pub fn shr(&mut self, mut by: usize) {
+
+        let page_len = self.len();
 
         // When we're shifting pages, we can shift by entire integers at once. This is a pretty slow operation, 
         if by >= PAGE_BITS {
@@ -74,10 +84,10 @@ impl BitSet {
             by -= shift_pages * PAGE_BITS;
             
             // For each page index, starting from 1
-            for ind in (0..self.len).rev() {
+            for ind in (0..page_len).rev() {
                 let new_ind = ind + shift_pages;
 
-                if new_ind >= self.len {
+                if new_ind >= page_len {
                     continue;
                 }
 
@@ -92,10 +102,10 @@ impl BitSet {
         }
 
         // For each set (iterating from the right)
-        for i in (0..self.len).rev() {
+        for i in (0..page_len).rev() {
 
             // If it's the last page - simply shift it 
-            if i == self.len-1 {
+            if i == page_len-1 {
                 self.pages[i] >>= by;
             } else {
                 // In any other case we're going to shift our current page onto the right one
@@ -127,7 +137,7 @@ pub struct SlidingAckWindow {
     latest: Option<PacketSeqId>,
     
     /// The amount of packet frames (a single frame can contain multiple packets)
-    frames_amount: usize,
+    packet_len: usize,
 
     /// The frame storage itself (has a constant size)
     frames: BitSet
@@ -151,15 +161,13 @@ pub enum PacketMark {
 
 impl SlidingAckWindow {
 
-    /// Create a new sliding window with the provided amount of frames. 
-    /// 
-    /// Note that a single frame contains multiple packets (64 to be precise)
-    pub fn new(frames_amount: usize) -> Self {
-        let frames = BitSet::new(frames_amount);
+    /// Create a new sliding window with the provided amount of packets.
+    pub fn new(packet_len: usize) -> Self {
+        let frames = BitSet::new(packet_len);
 
         Self { 
             latest: None, 
-            frames_amount, 
+            packet_len, 
             frames
         }
     }
@@ -266,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_bitset_set() {
-        let mut bitset = BitSet::new(4);
+        let mut bitset = BitSet::new(256);
 
         for ind in 0..16 {
             bitset.set(ind, true);
@@ -283,15 +291,16 @@ mod tests {
 
     #[test]
     fn test_bitset_shift() {
-        const TEST_PAGES: usize = (u128::BITS as usize) / PAGE_BITS;
+        const TEST_BITS: usize = u128::BITS as usize;
+        const TEST_PAGES: usize = TEST_BITS / PAGE_BITS;
 
         // Load our structure
         let o_page: u128 = 0xF4F1748182F917A1293FA11283;
         let o_bitset = {   
-            let mut bs = BitSet::new(TEST_PAGES);
+            let mut bs = BitSet::new(TEST_BITS);
 
             // Load page by page our enormous u128 bitset
-            for ind in 0..TEST_PAGES {
+            for ind in 0..bs.len() {
                 bs.put(ind, (o_page >> ((TEST_PAGES-1)-ind)*PAGE_BITS) as BitPage);
             }
 
@@ -318,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_ack_window() {
-        let mut window = SlidingAckWindow::new(2);
+        let mut window = SlidingAckWindow::new(128);
 
         // Make a zero packet. It's not yet marked
         let a = 0;
