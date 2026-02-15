@@ -9,13 +9,13 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [x] Reliable unordered channel
 - [x] Reliable ordered channel
 - [x] Packet batching
-- [] Heartbeat management
-- [] Better acknowledgments (using bitmaps)
-- [] Fragmentation
-- [] Protocol versioning
-- [] Congestion control
-- [] Encryption + Hanshake (probably using `snow`) 
-- [] Socket customization (custom PPS, MTU limits, ...)
+- [ ] Heartbeat management
+- [ ] Better acknowledgments (using bitmaps)
+- [ ] Fragmentation
+- [ ] Protocol versioning
+- [ ] Congestion control
+- [ ] Encryption + Hanshake (probably using `snow`) 
+- [ ] Socket customization (custom PPS, MTU limits, ...)
 
 ## Testing
 A super obvious note if you would like to locally build and test the crate yourself: disable your firewall. Might be obvious, but I personally sunked a lot of
