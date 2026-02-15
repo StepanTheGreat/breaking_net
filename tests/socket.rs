@@ -57,6 +57,33 @@ fn test_basic_sockets() {
 }
 
 #[test]
+fn test_mtu_limits() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    // We're going to send 1 large message itilizing ALL our MTU capacity
+    let message = &[0u8; MTU_SIZE];
+    let rel = Reliability::Reliable;
+
+    // Send them 1 by 1
+    sock_a.send_to(&sock_b.addr(), message, rel);
+    sock_b.send_to(&sock_a.addr(), message, rel);
+
+    // Poll our sockets 2 times (due to ordering reasons)
+    poll_socks!(2, DT, [sock_a, sock_b]);
+
+    assert_eq!(sock_a.recv_from().unwrap().data, message);
+    assert_eq!(sock_b.recv_from().unwrap().data, message);
+
+    // Make sure that none of them has any other packets to discover
+    assert!(!sock_b.has_packets());
+    assert!(!sock_a.has_packets());
+}
+
+
+#[test]
 fn test_corruption_detection() {
     reset_stress_environment();
 

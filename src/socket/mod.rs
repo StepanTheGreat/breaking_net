@@ -142,7 +142,7 @@ pub struct SimpleSock {
     /// The receive buffer
     recv_buffer: Box<[u8]>,
 
-    send_buffer: Vec<u8>,
+    send_buffer: Box<[u8]>,
 }
 
 impl SimpleSock {
@@ -179,7 +179,7 @@ impl SimpleSock {
             socket,
             addr,
             recv_buffer: vec![0u8; capacity].into_boxed_slice(),
-            send_buffer: Vec::with_capacity(capacity),
+            send_buffer: vec![0u8; capacity].into_boxed_slice(),
         })
     }
 
@@ -195,17 +195,22 @@ impl SimpleSock {
             return Ok(());
         }
 
+        if data.len() > self.send_buffer.len()+4 {
+            return Err(io::Error::other("Reached socket's send capacity limits"));
+        }
+
         // Copy the message to our buffer
-        self.send_buffer.clear();
-        self.send_buffer.extend_from_slice(data);
+        let mut data_len = data.len();
+        self.send_buffer[..data_len].copy_from_slice(data);
 
         // Compute the CRC signature
-        let crc = crc32(&self.send_buffer);
+        let crc_bytes = crc32(&self.send_buffer[..data_len]).to_be_bytes();
 
         // Add it to the end of the message
-        self.send_buffer.extend_from_slice(&crc.to_be_bytes());
+        self.send_buffer[data_len..data_len+crc_bytes.len()].copy_from_slice(&crc_bytes);
+        data_len += crc_bytes.len();
 
-        let data = &self.send_buffer;
+        let data = &self.send_buffer[..data_len];
 
         match self.socket.send_to(data, &to.into()) {
             Ok(written) if written == data.len() => Ok(()),
@@ -656,7 +661,7 @@ impl Socket {
 
     /// Send a packet to the provided address
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
-        assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
+        assert!(data.len() <= MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
         self.connections
             .entry(*to)

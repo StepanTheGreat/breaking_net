@@ -22,15 +22,15 @@ pub use socket::{
     set_packet_loss_chance, set_packet_reorder_chance,
 };
 
-/// The maximum transport unit for our packets. I'm using a much lower number here to avoid
-/// fragmentation on most networks, though usually you're supposed to query it directly from
-/// a network interface.
-pub const MTU_SIZE: usize = 1200;
-
 /// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
 ///
 /// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely
-pub(crate) const MTU_SIZE_PRIVATE: usize = MTU_SIZE + 50;
+pub(crate) const MTU_SIZE_PRIVATE: usize = 1200;
+
+/// The maximum transport unit for our packets. I'm using a much lower number here to avoid
+/// fragmentation on most networks, though usually you're supposed to query it directly from
+/// a network interface.
+pub const MTU_SIZE: usize = MTU_SIZE_PRIVATE-50;
 
 /// Super tiny macro for constructing [SocketAddr] values
 ///
@@ -70,7 +70,7 @@ impl BroadcastListener {
     pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
         let socket = SimpleSock::new_ex(
             socket_addr,
-            MTU_SIZE,
+            MTU_SIZE_PRIVATE,
             SockSettings {
                 reuses_address: true,
                 ..Default::default()
@@ -112,7 +112,7 @@ impl BroadcastWriter {
         // The capacity is at zero, since we're not going to receive anything
         let socket = SimpleSock::new_ex(
             socket_addr,
-            0,
+            MTU_SIZE_PRIVATE,
             SockSettings {
                 broadcaster: true,
                 ..Default::default()
