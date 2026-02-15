@@ -1,17 +1,13 @@
 use rand::seq::SliceRandom;
 use socket2 as sock;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    io,
-    mem::MaybeUninit,
-    net,
-    rc::Rc,
+    collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc
 };
 
 use crate::{
     MTU_SIZE, MTU_SIZE_PRIVATE,
     crc32::{CRC32_SIG_LEN, crc32},
-    packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket},
+    packet::{PacketAckMap, PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket, build_ack_map},
     socket::channels::{Channel, ChannelStorage},
     window::SlidingAckWindow,
 };
@@ -276,60 +272,53 @@ impl SimpleSock {
 }
 
 #[derive(Clone)]
-enum QueuedPacket {
-    /// This packet will be sent only once
-    Unreliable(UserPacket),
-
-    /// This packet awaits confirmation from the user and will be resent after some amount of time
-    Reliable { timer: f32, packet: UserPacket },
+struct QueuedPacket {
+    packet: UserPacket,
+    timer: Option<f32>
 }
 
 impl QueuedPacket {
+    fn new_reliable(packet: UserPacket, timer: f32) -> Self {
+        Self {
+            packet,
+            timer: Some(timer)
+        }
+    }
+
+    fn new_unreliable(packet: UserPacket) -> Self {
+        Self {
+            packet, 
+            timer: None
+        }
+    }
+
     fn tick(&mut self, dt: f32) {
-        match self {
-            Self::Unreliable(_) => (),
-            Self::Reliable { timer, packet: _ } => {
-                *timer = (*timer - dt).max(0.0);
-            }
+        if let Some(timer) = self.timer.as_mut() {
+            *timer = (*timer - dt).max(0.0);
         }
     }
 
     /// Is this queued packet ready?
     fn is_ready(&self) -> bool {
-        match self {
-            // Unreliable packets are always ready
-            Self::Unreliable(_) => true,
-
-            // Reliable packets however, are not
-            Self::Reliable { timer, packet: _ } => *timer == 0.0,
-        }
+        self.timer.unwrap_or(0.0) == 0.0
     }
 
     fn size(&self) -> usize {
-        match self {
-            Self::Reliable { timer: _, packet } => packet.size(),
-            Self::Unreliable(packet) => packet.size(),
-        }
+        self.packet.size()
     }
 
     fn sequence_id(&self) -> Option<PacketSeqId> {
-        match self {
-            Self::Reliable { timer: _, packet } => packet.sequence_id(),
-            Self::Unreliable(packet) => packet.sequence_id(),
-        }
+        self.packet.sequence_id()
     }
 
     fn consume(self) -> UserPacket {
-        match self {
-            Self::Reliable { timer: _, packet } => packet,
-            Self::Unreliable(packet) => packet,
-        }
+        self.packet
     }
 
     /// Update this packet's timer
     fn set_timer(&mut self, new_time: f32) {
-        if let Self::Reliable { timer, packet: _ } = self {
-            *timer = new_time
+        if let Some(timer) = self.timer.as_mut() {
+            *timer = new_time;
         }
     }
 }
@@ -428,7 +417,7 @@ impl SocketConnection {
                 // Insert a new packet that must be dispatched ASAP
                 self.packet_queue
                     .queue
-                    .push_back(QueuedPacket::Reliable { timer: 0.0, packet });
+                    .push_back(QueuedPacket::new_reliable(packet, 0.0));
             }
 
             // Unreliable however don't get themselves anything
@@ -436,28 +425,44 @@ impl SocketConnection {
                 // Just push a basic unreliable packet
                 self.packet_queue
                     .queue
-                    .push_back(QueuedPacket::Unreliable(UserPacket::Unreliable { payload }));
+                    .push_back(QueuedPacket::new_unreliable(UserPacket::Unreliable { payload }));
             }
         }
     }
 
     /// Acknowledgments have been received on this connection
-    fn own_acknowledgments_received(&mut self, acks: &[PacketSeqId]) {
-        if acks.is_empty() {
+    fn own_acknowledgments_received(&mut self, ack_base: PacketSeqId, ack_map: PacketAckMap) {
+        // No acknowledgments
+        if ack_base == 0 && ack_map == 0 {
             return;
         }
 
-        self.self_acknowledged.extend(acks);
+        // Insert the base
+        self.self_acknowledged.insert(ack_base);
+        
+        // Init the cursor
+        let mut cursor = 1 << (PacketAckMap::BITS-1);
+
+        // For each bit
+        for bind in 0..PacketAckMap::BITS {
+            
+            // If the cursor reads 1 - insert the acknowledgment into the set
+            if ack_map & cursor > 0 {
+                self.self_acknowledged.insert(ack_base + bind+1);
+            } 
+            
+            // Move the cursor to the right
+            cursor >>=  1;
+        }
     }
 
     fn other_acknowledgment_received(&mut self, ack: PacketSeqId) {
         self.other_acknowledged.insert(ack);
     }
 
-    /// A separate polling method that specialises in sending packets
-    fn poll_send(&mut self, socket: &mut SimpleSock, dt: f32) {
-        let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
 
+    /// Update packets while also collecting them into a queue at the same time
+    fn update_collect_candidates(&mut self, dt: f32, candidates: &mut VecDeque<QueuedPacket>) {
         // We're going to go from back to front
         for ind in (0..self.packet_queue.queue.len()).rev() {
             // First we're going to update it
@@ -467,8 +472,7 @@ impl SocketConnection {
             let packet = self.packet_queue.queue[ind].clone();
 
             // If the packet is both acknowledged and ready - remove it from the queue
-            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id))
-                || packet.is_ready()
+            if !(matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) || !packet.is_ready())
             {
                 self.packet_queue.queue.remove(ind);
             }
@@ -489,6 +493,12 @@ impl SocketConnection {
                 RNG_STATE.with(|rng| b.shuffle(&mut *rng.borrow_mut()));
             }
         }
+    }
+
+    /// A separate polling method that specialises in sending packets
+    fn prepare_and_send(&mut self, socket: &mut SimpleSock, dt: f32) {
+        let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
+        self.update_collect_candidates(dt, &mut candidates);
 
         let mut cant_fit_stack = Vec::new();
 
@@ -498,12 +508,26 @@ impl SocketConnection {
             // No matter the delta here, we're not going to send more than our PPS in a single second
         ) as usize;
 
+        // Build our acknowledgment map
+        let (ack_base, ack_map) = {
+            let mut acknowledgments: Vec<PacketSeqId> = self.other_acknowledged.iter().copied().collect();
+            acknowledgments.sort();
+
+            build_ack_map(&acknowledgments)
+        };
+
+        // Only keep acknowledgments that didn't fit into our acknowledgment map
+        self.other_acknowledged.retain(|seq_id| *seq_id > ack_base+PacketAckMap::BITS);
+
         // While we have some available packet slots
         while available_packets > 0 {
             // If there are no packets nor acks to send - we'll stop right here
             if candidates.is_empty() && self.other_acknowledged.is_empty() {
                 break;
             }
+
+            // Put our acknowledgments
+            self.crate_builder.put_acknowledgments(ack_base, ack_map);
 
             // While the candidate list is not empty
             while !candidates.is_empty() {
@@ -537,20 +561,6 @@ impl SocketConnection {
 
             // Now that we fit all our available packets - let's try to fit some acknowledgments
 
-            // While there are any acknowledgments and our crate can fit some
-            while !self.other_acknowledged.is_empty()
-                && self.crate_builder.available_ack_slots() > 0
-            {
-                // Take the first one (not in order)
-                let seq_id = self.other_acknowledged.iter().next().copied().unwrap();
-
-                // Remove it (thus marking it as acknowledged)
-                self.other_acknowledged.remove(&seq_id);
-
-                // Then put it into the crate
-                self.crate_builder.put_acknowledgments(&[seq_id]);
-            }
-
             // Finally, our crate is ready to go. All we need to do is build and send it
             let data = self.crate_builder.build();
             let _ = socket.send_to(data, self.to);
@@ -580,8 +590,8 @@ impl SocketConnection {
     }
 
     fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
-        // Then send our own
-        self.poll_send(socket, dt);
+        // Then send our own packets
+        self.prepare_and_send(socket, dt);
     }
 
     /// Process the provided packet (by filtering it out)
@@ -654,20 +664,17 @@ impl Socket {
             .queue_packet(how, data.to_owned());
     }
 
-    /// Poll this socket thus updating its inner receive buffer and sending data.
-    pub fn poll(&mut self, dt: f32) {
-        assert!(dt >= 0.0);
-
-        // We're going to collect all packets received by this socket
+    /// Receive and distribute (to connections) packets
+    fn receive_packets(&mut self) {
         while let Some((data, sender)) = self.socket.recv_from() {
             // If it's decodable
-            if let Ok((acks, packets)) = bitcode::decode::<PacketCrate>(data) {
+            if let Ok((ack_base, ack_map, packets)) = bitcode::decode::<PacketCrate>(data) {
                 // Get or make a new socket connection for this packet
                 let mut connection = self.connections.get_mut(&sender);
 
                 // If this is a packet from a known connection - let it mark all the acknowledgments it needs
                 if let Some(conn) = connection.as_mut() {
-                    conn.own_acknowledgments_received(&acks);
+                    conn.own_acknowledgments_received(ack_base, ack_map);
                 }
 
                 // Now we're going to iterate every single packet
@@ -695,8 +702,10 @@ impl Socket {
                 }
             }
         }
+    }
 
-        // Now, we're going to poll each connection individually as well
+    /// Poll all our connections and 
+    fn poll_connections(&mut self, dt: f32) {
         for (_, connection) in self.connections.iter_mut() {
             connection.poll(&mut self.socket, dt);
 
@@ -712,6 +721,17 @@ impl Socket {
                 });
             }
         }
+    }
+
+    /// Poll this socket thus updating its inner receive buffer and sending data.
+    pub fn poll(&mut self, dt: f32) {
+        assert!(dt >= 0.0);
+
+        // We're going to collect all packets received by this socket
+        self.receive_packets();
+
+        // Now, we're going to poll each connection individually as well
+        self.poll_connections(dt);
     }
 
     /// Check if we got a packet

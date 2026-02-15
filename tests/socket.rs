@@ -214,12 +214,10 @@ fn test_hundreds_of_packets() {
         // We're going to send them to each other
         sock_a.send_to(&sock_b.addr(), &num.to_be_bytes(), Reliability::Reliable);
         sock_b.send_to(&sock_a.addr(), &num.to_be_bytes(), Reliability::Reliable);
-
-        poll_socks!(DT, [sock_a, sock_b]);
     }
 
-    // One final poll
-    poll_socks!(DT, [sock_a, sock_b]);
+    // Succeeds in only 6 polls total
+    poll_socks!(6, DT, [sock_a, sock_b]);
 
     // Now receive and check
     for num in 0..=N {

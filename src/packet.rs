@@ -14,6 +14,8 @@ pub type PacketChecksum = [u8; 4];
 /// The packet data itself
 pub type PacketPayload = Rc<Vec<u8>>;
 
+pub type PacketAckMap = u32;
+
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reliability {
@@ -114,7 +116,7 @@ impl UserPacket {
 /// Its main purpose is to batch packets into larger packets (when possible)
 pub struct PacketCrateBuilder {
     /// Acknowledgments to pack. Why are we using an option here? To safely work around the borrowchecker
-    acknowledgments: Option<Vec<u32>>,
+    acknowledgments: Option<(PacketSeqId, PacketAckMap)>,
 
     /// User packets to pack
     user_packets: Option<Vec<UserPacket>>,
@@ -129,15 +131,23 @@ pub struct PacketCrateBuilder {
 }
 
 /// The inherent serialisation type behind packet crate
-pub type PacketCrate = (Vec<u32>, Vec<UserPacket>);
+/// 
+/// It includes:
+/// - An acknowledgment base
+/// - An acknowledgment map
+/// - A list of packets
+pub type PacketCrate = (PacketSeqId, PacketAckMap, Vec<UserPacket>);
 
 impl PacketCrateBuilder {
-    /// The initial size of the packet crate (2 vector lengths +)
-    const INIT_SIZE: usize = size_of::<u32>() * 2;
+    /// The initial size of the packet crate:
+    /// - Base acknowledgment ID (4)
+    /// - Acknowledgment map (4)
+    /// - Length of user packets (4)
+    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<PacketAckMap>() + size_of::<u32>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
-            acknowledgments: Some(Vec::new()),
+            acknowledgments: None,
             user_packets: Some(Vec::new()),
 
             serbuffer: bitcode::Buffer::new(),
@@ -147,7 +157,7 @@ impl PacketCrateBuilder {
         }
     }
 
-    /// Check if this packet crate can fit the provided amount
+    /// Check if this packet crate can fit the provided amount of bytes
     pub fn can_fit(&self, amount: usize) -> bool {
         (self.size + amount) <= self.mtu
     }
@@ -157,19 +167,8 @@ impl PacketCrateBuilder {
         self.mtu - self.size
     }
 
-    pub fn put_acknowledgments(&mut self, acks: &[u32]) {
-        // Make sure that we can actually fit these acknowledgments
-        let size = size_of_val(acks);
-        assert!(self.can_fit(size));
-
-        // Add them to our vector
-        self.acknowledgments
-            .as_mut()
-            .unwrap()
-            .extend_from_slice(acks);
-
-        // Increment the size of the packer
-        self.size += size;
+    pub fn put_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
+        self.acknowledgments = Some((base, map));
     }
 
     pub fn put_user_packet(&mut self, packet: UserPacket) {
@@ -187,7 +186,7 @@ impl PacketCrateBuilder {
 
     /// Clear this packet crate for reusability
     pub fn clear(&mut self) {
-        self.acknowledgments.as_mut().unwrap().clear();
+        self.acknowledgments = None;
         self.user_packets.as_mut().unwrap().clear();
 
         self.size = Self::INIT_SIZE;
@@ -195,15 +194,17 @@ impl PacketCrateBuilder {
 
     /// A packet crate packer is empty if it doesn't contain any acknowledgments or user packets
     pub fn is_empty(&self) -> bool {
-        self.acknowledgments.as_ref().unwrap().is_empty()
-            && self.user_packets.as_ref().unwrap().is_empty()
+        self.acknowledgments.is_none() && self.user_packets.as_ref().unwrap().is_empty()
     }
 
     /// Build this crate and get the slice of the serialized crate packet
     pub fn build(&mut self) -> &[u8] {
         // First of all, create our packet crate
+
+        let (ack_base, ack_map) = self.acknowledgments.unwrap_or((0, 0));
         let pcrate: PacketCrate = (
-            self.acknowledgments.take().unwrap(),
+            ack_base,
+            ack_map,
             self.user_packets.take().unwrap(),
         );
 
@@ -211,20 +212,55 @@ impl PacketCrateBuilder {
         let serialized = self.serbuffer.encode(&pcrate);
 
         {
-            // Now, put back its contents and clear them
-            let (mut acknowledgments, mut user_packets) = pcrate;
+            // Now, clear and put back our user packet vector
+            let (_, _, mut user_packets) = pcrate;
 
-            acknowledgments.clear();
             user_packets.clear();
-
-            self.acknowledgments = Some(acknowledgments);
             self.user_packets = Some(user_packets);
         }
 
         // Reset the size of our builder
         self.size = Self::INIT_SIZE;
+        self.acknowledgments = None;
 
         // Return the serialized slice
         serialized
     }
+}
+
+
+/// Build an acknowledgment map from the provided **sorted** acknowledgment slice
+/// 
+/// It will return the base sequence ID from which to acknowledge packets and the map itself. 
+/// 
+/// This will not include base sequence ID into the map
+pub fn build_ack_map(acks: &[PacketSeqId]) -> (PacketSeqId, PacketAckMap) {
+    assert!(acks.is_sorted());
+
+    // The accepted default
+    if acks.is_empty() {
+        return (0, 0)
+    }
+    
+    // Initialise the map
+    let mut map = 0;
+
+    // Get the base
+    let base = acks[0];
+
+    for ack in acks[1..].iter().copied() {
+        
+        // Compute the delta (binary index)
+        let bind = ack-(base+1);
+
+        // We'll stop here
+        if bind >= PacketAckMap::BITS {
+            break;
+        }
+
+        // Finally, insert it into the map
+        map |= 1 << ((PacketAckMap::BITS-1)-bind);
+    } 
+
+    (base, map)
 }
