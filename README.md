@@ -9,9 +9,9 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [x] Reliable unordered channel
 - [x] Reliable ordered channel
 - [x] Packet batching
+- [x] Better acknowledgments (using bitmaps)
 - [ ] Fixed tickrate
 - [ ] Heartbeat management
-- [ ] Better acknowledgments (using bitmaps)
 - [ ] Fragmentation
 - [ ] Protocol versioning
 - [ ] Congestion control + RTT
