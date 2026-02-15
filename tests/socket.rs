@@ -7,14 +7,6 @@ const ADDR_B: net::SocketAddr = socket_addr!(localhost; 0);
 
 const DT: f32 = 1.0/30.0;
 
-macro_rules! poll_socks {
-    ($dt:expr, $($sock:expr),*) => {
-        $(
-            ($sock).poll($dt);
-        )*
-    };
-}
-
 #[test]
 fn test_basic_sockets() {
 
@@ -39,20 +31,9 @@ fn test_basic_sockets() {
         sock_b.send_to(&sock_a.addr(), msg, rel);
     }
 
-    // Poll our sockets
-    poll_socks!(DT, sock_a, sock_b);
-    {
-        // Only one crate should be sent (all packets should be concatenated)
-        assert_eq!(sock_a.sent_crates(), 1);
-        assert_eq!(sock_b.sent_crates(), 1);
-    
-        // Only one crate should be received (for the same reason)
-        assert_eq!(sock_b.received_crates(), 1);
-    }
+    // Poll our sockets 2 times (due to ordering reasons)
+    poll_socks!(2, DT, [sock_a, sock_b]);
 
-    // We're going to poll one more time, because socket A couldn't receive B's crate, since it was sent after A was polled
-    poll_socks!(DT, sock_a);
-    assert_eq!(sock_a.received_crates(), 1);
 
     // Both of them should have packets available
     assert!(sock_a.has_packets());
@@ -97,7 +78,7 @@ fn test_corruption_detection() {
     sock_a.send_to(&sock_b.addr(), msg, rel);
 
     // Poll our sockets
-    poll_socks!(DT, sock_a, sock_b);
+    poll_socks!(DT, [sock_a, sock_b]);
 
     // Ensure that our socket DOESN'T receive that packet
     assert!(sock_b.recv_from().is_some());
@@ -109,7 +90,7 @@ fn test_corruption_detection() {
     sock_a.send_to(&sock_b.addr(), msg, rel);
 
     // Poll our sockets
-    poll_socks!(DT, sock_a, sock_b);
+    poll_socks!(DT, [sock_a, sock_b]);
 
     // Ensure that our socket DOESN'T receive that packet
     assert!(sock_b.recv_from().is_none());
@@ -128,23 +109,25 @@ fn test_reliable_packets() {
     // Guarantee packet loss
     set_packet_loss_chance(1.0);
 
+    // Connect them
+    sock_a.connect(sock_b.addr());
+    sock_b.connect(sock_a.addr());
+
     // Send our message
     sock_a.send_to(&sock_b.addr(), msg, rel);
     
     // It will fail no matter how many times we're going to resend it
-    for _ in 0..10 {
-        poll_socks!(DT, sock_a, sock_b);
-    }
+    poll_socks!(10, DT, [sock_a, sock_b]);
     assert!(!sock_b.has_packets());
 
     // Drop our packet loss
     set_packet_loss_chance(0.0);
 
-    // Poll as for 10 times
-    poll_socks!(DT*10.0, sock_a, sock_b);
+    // Poll 10 times
+    poll_socks!(10, DT, [sock_a, sock_b]);
 
     // Ensure that our socket receives the packet
-   assert!(sock_b.recv_from().is_some());
+    assert!(sock_b.recv_from().is_some());
 
     // Receive it only once
     assert!(!sock_b.has_packets());
@@ -159,16 +142,19 @@ fn test_deduplication_packets() {
     let mut sock_b = Socket::new(ADDR_B).unwrap();
 
     let msg = b"Hello";
-    let rel = Reliability::Reliable;
 
     // Guarantee packet loss
     set_packed_dublication_chance(1.0);
 
+    // First we're going to connect them together, since packets without a connection never get "filtered"
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
     // Send our message
-    sock_a.send_to(&sock_b.addr(), msg, rel);
+    sock_a.send_to(&sock_b.addr(), msg, Reliability::ReliableUnordered);
     
-    // Poll as for 10 times
-    poll_socks!(DT, sock_a, sock_b);
+    // Poll 10 times
+    poll_socks!(10, DT, [sock_a, sock_b]);
 
     // Ensure that our socket receives the packet
     assert!(sock_b.recv_from().is_some());
@@ -176,4 +162,91 @@ fn test_deduplication_packets() {
     // Receive it only once
     assert!(!sock_b.has_packets());
 
+}
+
+#[test]
+fn test_reordering_packets() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    let msgs: &[&[u8]] = &[
+        b"Hello",
+        b" ",
+        b"World",
+        b"!"
+    ];
+
+    // Let's throw some horrible numbers there
+    set_packet_reorder_chance(1.0);
+    set_packed_dublication_chance(1.0);
+
+    // First we're going to connect them together, since packets without a connection never get "filtered"
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
+    // Send our message reliably
+    for msg in msgs {
+        sock_a.send_to(&sock_b.addr(), msg, Reliability::Reliable);
+    }
+    
+    // Poll 10 times
+    poll_socks!(10, DT, [sock_a, sock_b]);
+
+    // Finally, for each message that we sent
+    for msg in msgs {
+        // Receive it and check for the contents
+        let packet = sock_b.recv_from().unwrap();
+
+        assert!(&packet.data == msg);
+    }
+
+    // Receive it only once
+    assert!(!sock_b.has_packets());
+
+}
+
+/// Test a continous message dialogue
+#[test]
+fn test_hundreds_of_packets() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    // First we're going to connect them together
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
+    // Let's throw some horrible numbers there
+    set_packet_reorder_chance(1.0);
+    set_packed_dublication_chance(1.0);
+
+    const N: u32 = 258;
+
+    // Let's send 258 integers
+    for num in 0..=N {
+
+        // We're going to send them to each other
+        sock_a.send_to(&sock_b.addr(), &num.to_be_bytes(), Reliability::Reliable);
+        sock_b.send_to(&sock_a.addr(), &num.to_be_bytes(), Reliability::Reliable);
+
+        poll_socks!(DT, [sock_a, sock_b]);
+    }
+
+    // One final poll
+    poll_socks!(DT, [sock_a, sock_b]);
+
+    // Now receive and check
+    for num in 0..=N {
+        let pack_b = sock_a.recv_from().unwrap().data;
+        let pack_a = sock_b.recv_from().unwrap().data;
+
+        assert_eq!(&pack_b, &num.to_be_bytes());
+        assert_eq!(&pack_b, &pack_a);
+    }
+
+    assert!(!sock_a.has_packets());
+    assert!(!sock_b.has_packets());
 }

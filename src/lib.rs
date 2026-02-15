@@ -9,14 +9,19 @@ mod packet;
 mod socket;
 mod window;
 
+mod utils;
+
 pub use socket::Socket;
 pub use packet::Reliability;
+
+pub(crate) use utils::*;
 
 #[cfg(feature = "stress_testing")]
 pub use socket::{
     set_packed_corruption_chance,
     set_packet_loss_chance,
     set_packed_dublication_chance,
+    set_packet_reorder_chance,
     reset_stress_environment
 };
 

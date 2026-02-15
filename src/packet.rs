@@ -17,14 +17,24 @@ pub type PacketPayload = Rc<Vec<u8>>;
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reliability {
+    /// A packet is fully unreliable
     Unreliable,
-    Reliable
+
+    /// Packets are resent, but they arrive in undefined order
+    ReliableUnordered,
+
+    /// Packets arrive and get processed in the same order they were sent
+    Reliable,
 }
 
 #[derive(Clone, Encode, Decode)]
 pub enum UserPacket {
     Unreliable {
         payload: PacketPayload,
+    },
+    ReliableUnordered {
+        seq_id: PacketSeqId,
+        payload: PacketPayload
     },
     Reliable {
         seq_id: PacketSeqId,
@@ -35,21 +45,23 @@ pub enum UserPacket {
 impl UserPacket {
     pub fn is_reliable(&self) -> bool {
         match self {
-            Self::Reliable {
-                seq_id: _,
-                payload: _,
-            } => true,
-            Self::Unreliable { payload: _ } => false,
+            Self::Reliable { .. } => true,
+            Self::ReliableUnordered { .. } => true,
+            Self::Unreliable { .. } => false,
         }
     }
 
     /// A conservative estimate of the total packet size
     pub fn size(&self) -> usize {
         let size = match self {
-            Self::Reliable { seq_id: _, payload } => {
+            Self::Reliable { payload, .. } => {
                 // Sequence ID + Payload length + payload itself
                 size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
-            }
+            },
+            Self::ReliableUnordered { payload, .. } => {
+                // Sequence ID + Payload length + payload itself
+                size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
+            },
             Self::Unreliable { payload } => {
                 // Payload length + payload itself
                 size_of::<u32>() + payload.len()
@@ -64,16 +76,18 @@ impl UserPacket {
     /// Get a sequence id of this packet, if present
     pub fn sequence_id(&self) -> Option<PacketSeqId> {
         match self {
-            Self::Reliable { seq_id, payload: _ } => Some(*seq_id),
-            Self::Unreliable { payload: _ } => None,
+            Self::Reliable { seq_id, ..} => Some(*seq_id),
+            Self::ReliableUnordered { seq_id, .. } => Some(*seq_id),
+            Self::Unreliable { .. } => None,
         }
     }
     
     /// Get this packet's reliability value
     pub fn reliability(&self) -> Reliability {
         match self {
-            Self::Reliable { seq_id: _, payload: _ } => Reliability::Reliable,
-            Self::Unreliable { payload: _ } => Reliability::Unreliable,
+            Self::Reliable { .. } => Reliability::Reliable,
+            Self::ReliableUnordered { .. } => Reliability::ReliableUnordered,
+            Self::Unreliable { .. } => Reliability::Unreliable,
         }
     }
 
@@ -81,7 +95,16 @@ impl UserPacket {
     pub fn consume_payload(self) -> Option<Vec<u8>> {
         match self {
             Self::Reliable { seq_id: _, payload } => Rc::into_inner(payload),
-            Self::Unreliable { payload } => Rc::into_inner(payload)
+            Self::ReliableUnordered { seq_id: _, payload } => Rc::into_inner(payload),
+            Self::Unreliable { payload } => Rc::into_inner(payload),
+        }
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        match self {
+            Self::Reliable { seq_id: _, payload } => payload.as_slice(),
+            Self::ReliableUnordered { seq_id: _, payload } => payload.as_slice(),
+            Self::Unreliable { payload } => payload.as_slice(),
         }
     }
 }

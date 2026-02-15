@@ -133,12 +133,9 @@ impl BitSet {
 /// - If it's smaller - we must mark a bit in one of the available windows. If it's further than that - we won't mark anything.
 /// - In any other case we don't do anything. 
 pub struct SlidingAckWindow {
-    /// The latest packet to arrive
-    latest: Option<PacketSeqId>,
+    /// The position of the window (the oldest packet) to not get acknowledged
+    window_pos: PacketSeqId,
     
-    /// The amount of packet frames (a single frame can contain multiple packets)
-    packet_len: usize,
-
     /// The frame storage itself (has a constant size)
     frames: BitSet
 }
@@ -147,7 +144,7 @@ pub struct SlidingAckWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketMark {
     /// The packet is new (out of window bounds)
-    New,
+    OutOfReach,
 
     /// The packet is within the bounds (marked)
     Marked,
@@ -166,8 +163,7 @@ impl SlidingAckWindow {
         let frames = BitSet::new(packet_len);
 
         Self { 
-            latest: None, 
-            packet_len, 
+            window_pos: 0, 
             frames
         }
     }
@@ -175,95 +171,76 @@ impl SlidingAckWindow {
     /// Mark this packet
     pub fn mark(&mut self, packet: PacketSeqId) {
         
-        match self.latest {
-            // We don't have any packets, so this one is the first we encounter
-            None => {
-                self.latest = Some(packet);
-                // Our first bit is then marked as our most recent packet
-                self.frames.set(0, true);
-            },
-
-            // We already have a packet, so we must test against it
-            Some(latest) => {
-
-                // If our packet is more recent than the latest - it automatically shifts our entire structure
-                if packet > latest {
-
-                    // Compute the delta
-                    let delta = packet-latest;
-                    
-                    // Shift our bits to the right
-                    self.frames.shr(delta as usize);
-
-                    // Mark this new packet right at the top
-                    self.frames.set(0, true);
-
-                    // This packet now is the latest one
-                    self.latest = Some(packet);
-                } else {
-                    // In any other case the packet is probably in our window
-
-                    // Compute its bit-index
-                    let bind = (latest-packet) as usize;
-
-                    // If it's in our window range - mark it
-                    if bind < self.frames.bit_len() {
-                        self.frames.set(bind, true);
-                    }
-                }
-            }
+        // The packet is older than our window, meaning it's a dublicate
+        if packet < self.window_pos {
+            return;
         }
 
-        if self.latest.is_none() {
-            self.latest = Some(packet);
+        // Let's compute the packet's index
+        let ind = (packet - self.window_pos) as usize;
+
+        if ind >= self.frames.bit_len {
+            // We can't possibly mark it
+            return;
+        }
+
+        // Mark it
+        self.frames.set((self.frames.bit_len()-1)-ind, true);
+
+        // Finally, while our topmost bit is 1 (meaning our window can actually slide)
+        while self.frames.get(self.frames.bit_len()-1) {
+
+            // We're going to shift our bits to the right by 1
+            self.frames.shr(1);
+
+            // And increment our position
+            self.window_pos += 1;
         }
     }
 
     /// Get the mark status for the provided packet
     pub fn get_marked(&self, packet: PacketSeqId) -> PacketMark {
-        match self.latest {
-            // We don't have any data whatsoever, so the packet is new
-            None => PacketMark::New,
+        if packet < self.window_pos {
+            return PacketMark::Old;
+        }
 
-            Some(latest) => {
+        let ind = (packet - self.window_pos) as usize;
 
-                if packet > latest {
-                    // The packet is newer than our latest one
-                    PacketMark::New
-                } else {
-                    // In any other case we must compute a delta between these packets
-                    let delta = (latest-packet) as usize;
-                    println!("Delta: {delta}");
+        if ind >= self.frames.bit_len {
+            // This packet can't be processed for now
+            return PacketMark::OutOfReach;
+        }
 
-                    if delta < self.frames.bit_len() {
-                        // Check if it's marked
-                        let marked = self.frames.get(delta);
-                        if marked {
-                            println!("Marked: {marked}");
-                            PacketMark::Marked
-                        } else {
-                            PacketMark::NonMarked
-                        }
-                    } else {
-                        // In any other case it's out of reach, so it probably was marked, but no longer
-                        PacketMark::Old
-                    }
-                }
-            }
+        // In any other case we're going to check the window
+        match self.frames.get((self.frames.bit_len()-1)-ind) {
+            true  => PacketMark::Marked,
+            false => PacketMark::NonMarked
         }
     }
 
-    /// The packet is considered "new" if it's newer or wasn't marked within the window bounds
-    pub fn is_new(&self, packet: PacketSeqId) -> bool {        
-        let mark = self.get_marked(packet);
-
-        // Our packet is new if it's old or non-marked (within window bounds)        
-        mark == PacketMark::New || mark == PacketMark::NonMarked
+    /// Get the lowest window position sequence
+    pub fn window_position(&self) -> PacketSeqId {
+        self.window_pos
     }
 
     /// Check if this packet is old (no longer within the window bounds)
     pub fn is_old(&self, packet: PacketSeqId) -> bool {
         self.get_marked(packet) == PacketMark::Old
+    }
+
+    pub fn is_out_of_reach(&self, packet: PacketSeqId) -> bool {
+        self.get_marked(packet) == PacketMark::OutOfReach
+    }
+
+    /// Check if this packet is within window's bounds 
+    pub fn within_bounds(&self, packet: PacketSeqId) -> bool {
+        let m = self.get_marked(packet);
+
+        m == PacketMark::Marked || m == PacketMark::NonMarked
+    }
+
+    pub fn is_marked(&self, packet: PacketSeqId) -> bool {
+        self.get_marked(packet) == PacketMark::Marked
     }
 }
 
@@ -330,37 +307,42 @@ mod tests {
         let mut window = SlidingAckWindow::new(128);
 
         // Make a zero packet. It's not yet marked
-        let a = 0;
-        assert!(window.is_new(a));
+        assert!(!window.is_marked(0));
 
         // Mark it
-        window.mark(a);
-        assert!(!window.is_new(a));
+        window.mark(0);
+        
+        // Our window has now shifted
+        assert!(window.window_position() == 1);
+
+        // And our packet is now too old
+        assert!(window.is_old(0));        
 
         // Let's mark some more packets
-        for p in 1..16 {
-            assert!(window.is_new(p));
+        for p in 2..16 {
+            assert!(!window.is_marked(p));
             window.mark(p);
 
-            assert!(!window.is_new(p));
+            assert!(window.is_marked(p));
         }
 
-        // Now we're going to mark 128, which will destroy the oldest packet we got (0)
-        window.mark(128);
+        // Still, our window position is at 1, because 1 isn't yet acknowledged
+        assert!(window.window_position() == 1);
 
-        assert!(window.is_old(a));
+        // Because of which, we can't acknowledge higher packets
+        assert!(window.is_out_of_reach(129));
 
-        // However, all the other packets must still be present
-        for p in 1..16 {
-            assert!(!window.is_new(p));
-        }
+        assert!(!window.is_marked(1));
 
-        // Let's mark a more recent one
-        window.mark(144);
+        // Now let's finally mark this 1 packet
+        window.mark(1);
 
-        // These now should be obsolete
+        // Now, all these packets are now longer marked
         for p in 1..16 {
             assert!(window.is_old(p));
         }
+
+        // And higher packets can finally flow
+        assert!(!window.is_out_of_reach(129));
     }
 }

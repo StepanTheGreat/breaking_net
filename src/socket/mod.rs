@@ -1,13 +1,12 @@
+use rand::seq::SliceRandom;
 use socket2 as sock;
 use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
 
 use crate::{
-    MTU_SIZE,
-    MTU_SIZE_PRIVATE, 
-    crc32::{CRC32_SIG_LEN, crc32}, 
-    packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}, 
-    window::SlidingAckWindow
+    MTU_SIZE, MTU_SIZE_PRIVATE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}, socket::channels::{Channel, ChannelStorage}, window::SlidingAckWindow
 };
+
+mod channels;
 
 /// Resend every 2 frames
 const RESEND_TIMER: f32 = 1.0/15.0;
@@ -29,8 +28,10 @@ mod stress_testing {
         static PACKET_DUBLICATION_CHANCE: Cell<f32> = Cell::default();
     
         static PACKET_CORRUPTION_CHANCE: Cell<f32> = Cell::default();
+
+        static PACKET_REORDER_CHANCE: Cell<f32> = Cell::default();
     
-        static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(|| 
+        pub(crate) static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(|| 
             RefCell::new(rand::rngs::SmallRng::from_os_rng())
         );
     }
@@ -59,11 +60,18 @@ mod stress_testing {
         PACKET_CORRUPTION_CHANCE.set(new_chance);
     }
 
+    /// Set the thread-local packet loss chance 
+    pub fn set_packet_reorder_chance(new_chance: f32) {
+        assert_chance_valid(new_chance);
+        PACKET_REORDER_CHANCE.set(new_chance);
+    }
+
     /// Reset the stress-testing environment 
     pub fn reset_stress_environment() {
         set_packed_corruption_chance(0.0);
         set_packed_dublication_chance(0.0);
         set_packet_loss_chance(0.0);
+        set_packet_reorder_chance(0.0);
     }
 
 
@@ -84,9 +92,14 @@ mod stress_testing {
         satisfies_random_chance(PACKET_LOSS_CHANCE.get())
     }
 
-    /// Should this next packet be dublicated?
+    /// Should this next packet get dublicated?
     pub(crate) fn should_dublicate_packet() -> bool {
         satisfies_random_chance(PACKET_DUBLICATION_CHANCE.get())
+    }
+
+    /// Should the next packets get reordered?
+    pub(crate) fn should_reorder_packets() -> bool {
+        satisfies_random_chance(PACKET_REORDER_CHANCE.get())
     }
 }
 
@@ -255,7 +268,10 @@ impl SimpleSock {
 
 #[derive(Clone)]
 enum QueuedPacket {
+    /// This packet will be sent only once
     Unreliable(UserPacket),
+
+    /// This packet awaits confirmation from the user and will be resent after some amount of time
     Reliable {
         timer: f32,
         packet: UserPacket
@@ -349,17 +365,16 @@ struct SocketConnection {
     /// The maximum amount of packets 
     max_transfer_unit: usize,
 
-    /// How many crates were sent during the last polling operation
-    sent_crates: usize,
-
     /// The builder with which we'll be building all packets
     crate_builder: PacketCrateBuilder,
 
     /// Packets to send with their respected decrementing timers
     packet_queue: PacketQueue,
 
-    /// The sliding window to track received packets
-    ack_window: SlidingAckWindow,
+    channels: ChannelStorage,
+
+    /// The sliding window for all reliable packets
+    packet_window: SlidingAckWindow,
 
     /// Sequence IDs of packets that were sent from this connection
     self_acknowledged: HashSet<PacketSeqId>,
@@ -375,14 +390,14 @@ impl SocketConnection {
 
         Self {
             to,
-            sent_crates: 0,
 
             packets_per_second,
             max_transfer_unit,
             crate_builder: PacketCrateBuilder::new(max_transfer_unit),
-
-            ack_window: SlidingAckWindow::new(PACKET_WINDOW_BITS),
             packet_queue: PacketQueue::new(),
+
+            packet_window: SlidingAckWindow::new(128),
+            channels: ChannelStorage::new(),
 
             self_acknowledged: HashSet::new(),
             other_acknowledged: HashSet::new(),
@@ -393,18 +408,28 @@ impl SocketConnection {
     fn queue_packet(&mut self, reliability: Reliability, payload: Vec<u8>) {
         let payload = Rc::new(payload);
         
+        // Based on different reliability, we're going to queue them differently
         match reliability {
-            Reliability::Reliable => {
+            // Reliable ordered/unordered get themselves resend timers
+            Reliability::Reliable | Reliability::ReliableUnordered => {
                 let seq_id = self.packet_queue.reliable_counter.next();
+
+                let packet = if reliability == Reliability::Reliable {
+                    UserPacket::Reliable { seq_id, payload }
+                } else {
+                    UserPacket::ReliableUnordered { seq_id, payload }
+                };
 
                 // Insert a new packet that must be dispatched ASAP
                 self.packet_queue.queue.push_back(
                     QueuedPacket::Reliable {
                         timer: 0.0, 
-                        packet: UserPacket::Reliable { seq_id, payload }
+                        packet
                     }
                 );
             },
+
+            // Unreliable however don't get themselves anything
             Reliability::Unreliable => {
                 // Just push a basic unreliable packet
                 self.packet_queue.queue.push_back(
@@ -430,7 +455,6 @@ impl SocketConnection {
     /// A separate polling method that specialises in sending packets
     fn poll_send(&mut self, socket: &mut SimpleSock, dt: f32) {
         let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
-        self.sent_crates = 0;
 
         // We're going to go from back to front
         for ind in (0..self.packet_queue.queue.len()).rev() {
@@ -449,6 +473,17 @@ impl SocketConnection {
             // And if ready - add to the candidate list
             if packet.is_ready() {
                 candidates.push_front(packet);
+            }
+        }
+
+        #[cfg(feature = "stress_testing")]
+        {
+            if should_reorder_packets() {
+                let (a, b) = candidates.as_mut_slices();
+    
+                // All this ugly code to essentially simply shuffle this packet queue 
+                RNG_STATE.with(|rng| a.shuffle(&mut *rng.borrow_mut()));
+                RNG_STATE.with(|rng| b.shuffle(&mut *rng.borrow_mut()));
             }
         }
 
@@ -521,9 +556,6 @@ impl SocketConnection {
             // Decrement the amount of packets we got
             available_packets -= 1;
 
-            // Increment the amount of crates we sent
-            self.sent_crates += 1;
-
             // Because we'll have some packets that we couldn't fit - we're going to put them back onto the candidate list
             while let Some(packet) = cant_fit_stack.pop() {
                 candidates.push_front(packet);
@@ -550,18 +582,26 @@ impl SocketConnection {
         self.poll_send(socket, dt);
     }
 
-    /// Check if the provided packet was already received in this connection
-    pub fn was_received(&self, packet: PacketSeqId) -> bool {
-        !self.ack_window.is_new(packet)
+    /// Process the provided packet (by filtering it out)
+    fn process_packet(&mut self, packet: UserPacket) {
+
+        match packet.sequence_id() {
+            Some(seq_id) => {
+                if self.packet_window.within_bounds(seq_id) {
+                    self.channels.process_packet(&self.packet_window, packet);
+
+                    self.packet_window.mark(seq_id);
+                }
+            },
+            None => {
+                self.channels.process_packet(&self.packet_window, packet);
+            }
+        }
     }
 
-    /// Mark this packet as received
-    pub fn mark_received(&mut self, packet: PacketSeqId) {
-        self.ack_window.mark(packet);
-    }
-
-    fn sent_crates(&self) -> usize {
-        self.sent_crates
+    /// Receive all *available* packets
+    fn recv_packet(&mut self) -> Option<UserPacket> {
+        self.channels.recv_packet(&self.packet_window)
     }
 }
 
@@ -578,9 +618,6 @@ pub struct Socket {
     socket: SimpleSock,
     connections: HashMap<net::SocketAddr, SocketConnection>,
 
-    /// The amount of crates that were received in a polling session
-    recv_crates: usize,
-
     recv_buffer: VecDeque<ReceivedPacket>
 }
 
@@ -591,8 +628,6 @@ impl Socket {
         Ok(Self {
             socket,
             connections: HashMap::with_capacity(2),
-
-            recv_crates: 0,
 
             recv_buffer: VecDeque::new()
         })
@@ -622,8 +657,6 @@ impl Socket {
     pub fn poll(&mut self, dt: f32) {
         assert!(dt >= 0.0);
 
-        self.recv_crates = 0;
-
         // We're going to collect all packets received by this socket
         while let Some((data, sender)) = self.socket.recv_from() {
 
@@ -631,62 +664,59 @@ impl Socket {
             if let Ok((acks, packets)) = bitcode::decode::<PacketCrate>(data) {
 
                 // Get or make a new socket connection for this packet
-                let connection = self.connections.entry(sender)
-                    .or_insert(SocketConnection::new(sender));
-
-                // TODO: This is probably a horrible idea, since creating a new connection per every new message would be too expensive
+                let mut connection = self.connections.get_mut(&sender);
 
                 // If this is a packet from a known connection - let it mark all the acknowledgments it needs
-                connection.own_acknowledgments_received(&acks);
+                if let Some(conn) = connection.as_mut() {
+                    conn.own_acknowledgments_received(&acks);
+                }
 
                 // Now we're going to iterate every single packet
                 for packet in packets {
 
                     // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
-                    if let Some(seqid) = packet.sequence_id() {
-                        println!("Got a reliable packet!");
-
-                        connection.other_acknowledgment_received(seqid);
-
-                        if connection.was_received(seqid) {
-                            println!("This packet was already received: {seqid}");
-                            continue;
-                        } else {
-                            println!("A new packet was received:        {seqid}");
-                            connection.mark_received(seqid);
+                    if let Some(conn) = connection.as_mut() {
+                        
+                        // If this packet has a sequence ID - acknowledge it
+                        if let Some(seqid) = packet.sequence_id() {
+                            conn.other_acknowledgment_received(seqid);
                         }
+                        
+                        // And finally - process it (filter, reorder it and so on)
+                        conn.process_packet(packet);
+
+                    } else {
+
+                        // In any other case we're just going to buffer it without a connection
+                        self.recv_buffer.push_back(ReceivedPacket {
+                            sender: sender,
+
+                            // Even though it's factually incorrect - for us there's no connection, 
+                            // thus this packet is essentially unreliable no matter what
+                            reliability: Reliability::Unreliable,
+                            data: packet.consume_payload().unwrap(),
+                        });
                     }
-
-                    let reliability = packet.reliability();
-
-                    // Finally, add it to our queue
-                    self.recv_buffer.push_back(ReceivedPacket { 
-                        data: packet.consume_payload().unwrap(), 
-                        reliability, 
-                        sender 
-                    });
                 }
-
-                self.recv_crates += 1;
             }
         }
 
         // Now, we're going to poll each connection individually as well
         for (_, connection) in self.connections.iter_mut() {
             connection.poll(&mut self.socket, dt);
+
+            while let Some(packet) = connection.recv_packet() {
+                let reliability = packet.reliability();
+                let sender = connection.to;
+
+                // Finally, add it to our queue
+                self.recv_buffer.push_back(ReceivedPacket { 
+                    data: packet.consume_payload().unwrap(), 
+                    reliability, 
+                    sender 
+                });
+            }
         }
-    }
-
-    /// How many crates were received during the last poll operation
-    pub fn received_crates(&self) -> usize {
-        self.recv_crates
-    }
-
-    /// Count the total amount of sent crates to a target
-    pub fn sent_crates(&self) -> usize {
-        self.connections.iter()
-            .map(|(_, c)| c.sent_crates())
-            .sum()
     }
 
     /// Check if we got a packet
@@ -696,6 +726,18 @@ impl Socket {
 
     pub fn has_packets(&self) -> bool {
         !self.recv_buffer.is_empty()
+    }
+
+    /// "Establish" a new connection to the provided address.
+    /// 
+    /// This doesn't actually establish anything, it just creates a logical connection between this address. 
+    /// Note that if the other address doesn't send any packets whatsoever - this connection will close very quickly.
+    pub fn connect(&mut self, addr: net::SocketAddr) {
+        if self.connections.contains_key(&addr) {
+            return;
+        }
+
+        self.connections.insert(addr, SocketConnection::new(addr));
     }
 
     /// How many packets are available
