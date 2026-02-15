@@ -5,7 +5,7 @@ type BitPage = u64;
 /// The amount of bits in our bit page
 const PAGE_BITS: usize = BitPage::BITS as _;
 
-/// A super minimal bitset implementation which allows setting bits at arbitrary positions and shifting the entire structure to the right 
+/// A super minimal bitset implementation which allows setting bits at arbitrary positions and shifting the entire structure to the right
 #[derive(Clone)]
 pub struct BitSet {
     pages: Box<[BitPage]>,
@@ -20,11 +20,8 @@ impl BitSet {
         let pages_len = bit_len.div_ceil(PAGE_BITS);
 
         let pages = vec![0; pages_len].into_boxed_slice();
-        
-        Self {
-            bit_len,
-            pages
-        }
+
+        Self { bit_len, pages }
     }
 
     /// Set a bit at the provided location
@@ -33,16 +30,16 @@ impl BitSet {
 
         let ind = bind / PAGE_BITS;
         let offset = bind % PAGE_BITS;
-        
+
         if value != to {
-            self.pages[ind] ^= 1 << ((PAGE_BITS-1)-offset); 
+            self.pages[ind] ^= 1 << ((PAGE_BITS - 1) - offset);
         }
     }
 
     /// Directly put an entire page at a page position
     pub fn put(&mut self, index: usize, page: BitPage) {
         self.pages[index] = page;
-    } 
+    }
 
     pub fn read(&self, index: usize) -> BitPage {
         self.pages[index]
@@ -54,9 +51,7 @@ impl BitSet {
 
         let offset = index % PAGE_BITS;
 
-        (
-            self.pages[index/PAGE_BITS] & (1 << ((PAGE_BITS-1)-offset))
-        ) > 0
+        (self.pages[index / PAGE_BITS] & (1 << ((PAGE_BITS - 1) - offset))) > 0
     }
 
     /// The amount of pages this bitset contains (a single page containing multiple bits)
@@ -71,18 +66,16 @@ impl BitSet {
 
     /// Shift this structure to the right
     pub fn shr(&mut self, mut by: usize) {
-
         let page_len = self.len();
 
-        // When we're shifting pages, we can shift by entire integers at once. This is a pretty slow operation, 
+        // When we're shifting pages, we can shift by entire integers at once. This is a pretty slow operation,
         if by >= PAGE_BITS {
-
             // By how many pages to shift
             let shift_pages = by / PAGE_BITS;
 
             // Decrement by an entire page
             by -= shift_pages * PAGE_BITS;
-            
+
             // For each page index, starting from 1
             for ind in (0..page_len).rev() {
                 let new_ind = ind + shift_pages;
@@ -103,13 +96,12 @@ impl BitSet {
 
         // For each set (iterating from the right)
         for i in (0..page_len).rev() {
-
-            // If it's the last page - simply shift it 
-            if i == page_len-1 {
+            // If it's the last page - simply shift it
+            if i == page_len - 1 {
                 self.pages[i] >>= by;
             } else {
                 // In any other case we're going to shift our current page onto the right one
-                self.pages[i+1] |= self.pages[i] << (PAGE_BITS-by);
+                self.pages[i + 1] |= self.pages[i] << (PAGE_BITS - by);
 
                 // And now shift our own page
                 self.pages[i] >>= by;
@@ -123,21 +115,21 @@ impl BitSet {
 }
 
 /// The sliding window structure that helps keeping track of acknowledged packets.
-/// 
+///
 /// The way it works, is the window contains the general offset (the latest packet), and frames that go **before** this offset packet. It can be
 /// visualised like so: (latest)[frame_1][frame_2][frame_3][frame_n]
-/// 
-/// When we add a new packet, we compare it against our latest packet. 
+///
+/// When we add a new packet, we compare it against our latest packet.
 /// - If it's larger - we have to shift our entire structure to the left, based on the
 ///   delta between the new packet and the latest one. After that we must mark our former packet the same way.
 /// - If it's smaller - we must mark a bit in one of the available windows. If it's further than that - we won't mark anything.
-/// - In any other case we don't do anything. 
+/// - In any other case we don't do anything.
 pub struct SlidingAckWindow {
     /// The position of the window (the oldest packet) to not get acknowledged
     window_pos: PacketSeqId,
-    
+
     /// The frame storage itself (has a constant size)
-    frames: BitSet
+    frames: BitSet,
 }
 
 /// The mark of a packet, which describes its status in the packet window
@@ -153,24 +145,22 @@ pub enum PacketMark {
     NonMarked,
 
     /// THe packet is old (out of bounds)
-    Old
+    Old,
 }
 
 impl SlidingAckWindow {
-
     /// Create a new sliding window with the provided amount of packets.
     pub fn new(packet_len: usize) -> Self {
         let frames = BitSet::new(packet_len);
 
-        Self { 
-            window_pos: 0, 
-            frames
+        Self {
+            window_pos: 0,
+            frames,
         }
     }
 
     /// Mark this packet
     pub fn mark(&mut self, packet: PacketSeqId) {
-        
         // The packet is older than our window, meaning it's a dublicate
         if packet < self.window_pos {
             return;
@@ -185,11 +175,10 @@ impl SlidingAckWindow {
         }
 
         // Mark it
-        self.frames.set((self.frames.bit_len()-1)-ind, true);
+        self.frames.set((self.frames.bit_len() - 1) - ind, true);
 
         // Finally, while our topmost bit is 1 (meaning our window can actually slide)
-        while self.frames.get(self.frames.bit_len()-1) {
-
+        while self.frames.get(self.frames.bit_len() - 1) {
             // We're going to shift our bits to the right by 1
             self.frames.shr(1);
 
@@ -212,9 +201,9 @@ impl SlidingAckWindow {
         }
 
         // In any other case we're going to check the window
-        match self.frames.get((self.frames.bit_len()-1)-ind) {
-            true  => PacketMark::Marked,
-            false => PacketMark::NonMarked
+        match self.frames.get((self.frames.bit_len() - 1) - ind) {
+            true => PacketMark::Marked,
+            false => PacketMark::NonMarked,
         }
     }
 
@@ -232,7 +221,7 @@ impl SlidingAckWindow {
         self.get_marked(packet) == PacketMark::OutOfReach
     }
 
-    /// Check if this packet is within window's bounds 
+    /// Check if this packet is within window's bounds
     pub fn within_bounds(&self, packet: PacketSeqId) -> bool {
         let m = self.get_marked(packet);
 
@@ -247,7 +236,6 @@ impl SlidingAckWindow {
 #[cfg(test)]
 mod tests {
     use crate::window::{BitPage, BitSet, PAGE_BITS, SlidingAckWindow};
-
 
     #[test]
     fn test_bitset_set() {
@@ -273,12 +261,15 @@ mod tests {
 
         // Load our structure
         let o_page: u128 = 0xF4F1748182F917A1293FA11283;
-        let o_bitset = {   
+        let o_bitset = {
             let mut bs = BitSet::new(TEST_BITS);
 
             // Load page by page our enormous u128 bitset
             for ind in 0..bs.len() {
-                bs.put(ind, (o_page >> ((TEST_PAGES-1)-ind)*PAGE_BITS) as BitPage);
+                bs.put(
+                    ind,
+                    (o_page >> ((TEST_PAGES - 1) - ind) * PAGE_BITS) as BitPage,
+                );
             }
 
             bs
@@ -286,7 +277,6 @@ mod tests {
 
         // For every shift amount
         for shift_by in [1, 2, 3, 7, 50, 90, 129] {
-
             // Shift our 2 structures
             let page = o_page.unbounded_shr(shift_by);
             let mut bitset = o_bitset.clone();
@@ -295,7 +285,7 @@ mod tests {
             // Then compare them page by page
             for ind in 0..TEST_PAGES {
                 let page_a = bitset.read(ind);
-                let page_b = (page >> ((TEST_PAGES-1)-ind)*PAGE_BITS) as BitPage;
+                let page_b = (page >> ((TEST_PAGES - 1) - ind) * PAGE_BITS) as BitPage;
 
                 assert_eq!(page_a, page_b);
             }
@@ -311,12 +301,12 @@ mod tests {
 
         // Mark it
         window.mark(0);
-        
+
         // Our window has now shifted
         assert!(window.window_position() == 1);
 
         // And our packet is now too old
-        assert!(window.is_old(0));        
+        assert!(window.is_old(0));
 
         // Let's mark some more packets
         for p in 2..16 {

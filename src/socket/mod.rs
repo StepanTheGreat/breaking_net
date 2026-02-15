@@ -1,15 +1,25 @@
 use rand::seq::SliceRandom;
 use socket2 as sock;
-use std::{collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    io,
+    mem::MaybeUninit,
+    net,
+    rc::Rc,
+};
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket}, socket::channels::{Channel, ChannelStorage}, window::SlidingAckWindow
+    MTU_SIZE, MTU_SIZE_PRIVATE,
+    crc32::{CRC32_SIG_LEN, crc32},
+    packet::{PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket},
+    socket::channels::{Channel, ChannelStorage},
+    window::SlidingAckWindow,
 };
 
 mod channels;
 
 /// Resend every 2 frames
-const RESEND_TIMER: f32 = 1.0/15.0;
+const RESEND_TIMER: f32 = 1.0 / 15.0;
 
 /// We'll keep up to 512 packets
 const PACKET_WINDOW_BITS: usize = 512;
@@ -24,49 +34,50 @@ mod stress_testing {
 
     thread_local! {
         static PACKET_LOSS_CHANCE: Cell<f32> = Cell::default();
-    
+
         static PACKET_DUBLICATION_CHANCE: Cell<f32> = Cell::default();
-    
+
         static PACKET_CORRUPTION_CHANCE: Cell<f32> = Cell::default();
 
         static PACKET_REORDER_CHANCE: Cell<f32> = Cell::default();
-    
-        pub(crate) static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(|| 
+
+        pub(crate) static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(||
             RefCell::new(rand::rngs::SmallRng::from_os_rng())
         );
     }
 
     fn assert_chance_valid(chance: f32) {
         assert!(
-            (0.0..=1.0).contains(&chance), "The chance percentage must be between 0 and 1"
+            (0.0..=1.0).contains(&chance),
+            "The chance percentage must be between 0 and 1"
         );
     }
 
-    /// Set the thread-local packet loss chance 
+    /// Set the thread-local packet loss chance
     pub fn set_packet_loss_chance(new_chance: f32) {
         assert_chance_valid(new_chance);
         PACKET_LOSS_CHANCE.set(new_chance);
     }
 
-    /// Set the thread-local packet dublication chance 
+    /// Set the thread-local packet dublication chance
     pub fn set_packed_dublication_chance(new_chance: f32) {
         assert_chance_valid(new_chance);
         PACKET_DUBLICATION_CHANCE.set(new_chance);
     }
 
-    /// Set the thread-local packet dublication chance 
+    /// Set the thread-local packet dublication chance
     pub fn set_packed_corruption_chance(new_chance: f32) {
         assert_chance_valid(new_chance);
         PACKET_CORRUPTION_CHANCE.set(new_chance);
     }
 
-    /// Set the thread-local packet loss chance 
+    /// Set the thread-local packet loss chance
     pub fn set_packet_reorder_chance(new_chance: f32) {
         assert_chance_valid(new_chance);
         PACKET_REORDER_CHANCE.set(new_chance);
     }
 
-    /// Reset the stress-testing environment 
+    /// Reset the stress-testing environment
     pub fn reset_stress_environment() {
         set_packed_corruption_chance(0.0);
         set_packed_dublication_chance(0.0);
@@ -74,12 +85,9 @@ mod stress_testing {
         set_packet_reorder_chance(0.0);
     }
 
-
-    /// Generate a random number between 0 and 1, and check if it's less than the provided chance (thus returning `true`) 
+    /// Generate a random number between 0 and 1, and check if it's less than the provided chance (thus returning `true`)
     fn satisfies_random_chance(chance: f32) -> bool {
-        RNG_STATE.with(|rng| 
-            rng.borrow_mut().random_range(0.0..=1.0) <= chance
-        )
+        RNG_STATE.with(|rng| rng.borrow_mut().random_range(0.0..=1.0) <= chance)
     }
 
     /// Should this next packet get corrupted?
@@ -125,7 +133,7 @@ impl SequenceCounter {
 #[derive(Default, Clone, Copy)]
 pub struct SockSettings {
     pub broadcaster: bool,
-    pub reuses_address: bool
+    pub reuses_address: bool,
 }
 
 /// A simplified socket structure which directly handles buffers, reading and so on
@@ -133,17 +141,20 @@ pub struct SimpleSock {
     /// The socket itself
     socket: sock::Socket,
 
-    addr: net:: SocketAddr,
+    addr: net::SocketAddr,
 
     /// The receive buffer
     recv_buffer: Box<[u8]>,
 
-    send_buffer: Vec<u8>
+    send_buffer: Vec<u8>,
 }
 
 impl SimpleSock {
-    pub fn new_ex(addr: net::SocketAddr, capacity: usize, settings: SockSettings) -> io::Result<Self> {
-        
+    pub fn new_ex(
+        addr: net::SocketAddr,
+        capacity: usize,
+        settings: SockSettings,
+    ) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             sock::Domain::IPV4
         } else {
@@ -162,7 +173,8 @@ impl SimpleSock {
         // Bind it to the provided address
         socket.bind(&addr.into())?;
 
-        let addr = socket.local_addr()
+        let addr = socket
+            .local_addr()
             .expect("The socket is bound")
             .as_socket()
             .unwrap();
@@ -171,7 +183,7 @@ impl SimpleSock {
             socket,
             addr,
             recv_buffer: vec![0u8; capacity].into_boxed_slice(),
-            send_buffer: Vec::with_capacity(capacity)
+            send_buffer: Vec::with_capacity(capacity),
         })
     }
 
@@ -181,7 +193,7 @@ impl SimpleSock {
 
     /// Send some data to the provided address
     pub fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
-        // If we're stress testing - we'll just not do anything (like if the packet got naturally lost) 
+        // If we're stress testing - we'll just not do anything (like if the packet got naturally lost)
         #[cfg(feature = "stress_testing")]
         if should_lose_packet() {
             return Ok(());
@@ -190,26 +202,23 @@ impl SimpleSock {
         // Copy the message to our buffer
         self.send_buffer.clear();
         self.send_buffer.extend_from_slice(data);
-        
+
         // Compute the CRC signature
         let crc = crc32(&self.send_buffer);
 
         // Add it to the end of the message
-        self.send_buffer.extend_from_slice(
-            &crc.to_be_bytes()
-        );
+        self.send_buffer.extend_from_slice(&crc.to_be_bytes());
 
-        let data= &self.send_buffer;
+        let data = &self.send_buffer;
 
         match self.socket.send_to(data, &to.into()) {
             Ok(written) if written == data.len() => Ok(()),
             _ => Err(io::Error::other("Unable to send the packet")),
         }?;
 
-        // If this packet must be dublicated - we'll just send it twice. 
+        // If this packet must be dublicated - we'll just send it twice.
         #[cfg(feature = "stress_testing")]
         if should_dublicate_packet() {
-
             // For the sake of simplicity we're going to dublicate code here.
             match self.socket.send_to(data, &to.into()) {
                 Ok(written) if written == data.len() => Ok(()),
@@ -229,7 +238,7 @@ impl SimpleSock {
 
         match self.socket.recv_from(buff) {
             Ok((read, addr)) => {
-                // We received less bytes than our CRC signature 
+                // We received less bytes than our CRC signature
                 if read < CRC32_SIG_LEN {
                     return None;
                 }
@@ -240,15 +249,15 @@ impl SimpleSock {
                     buff[0..read].reverse();
                 }
 
-                // Let's compute the CRC signature from our 
-                let crc = crc32(&self.recv_buffer[..read-CRC32_SIG_LEN]);
+                // Let's compute the CRC signature from our
+                let crc = crc32(&self.recv_buffer[..read - CRC32_SIG_LEN]);
                 let crc_bytes: [u8; CRC32_SIG_LEN] = crc.to_be_bytes();
-                
-                if &self.recv_buffer[read-CRC32_SIG_LEN..read] != &crc_bytes {
+
+                if self.recv_buffer[read - CRC32_SIG_LEN..read] != crc_bytes {
                     return None;
                 }
 
-                Some((&self.recv_buffer[..read-CRC32_SIG_LEN], addr.as_socket()?))
+                Some((&self.recv_buffer[..read - CRC32_SIG_LEN], addr.as_socket()?))
             }
             Err(_) => None,
         }
@@ -272,16 +281,13 @@ enum QueuedPacket {
     Unreliable(UserPacket),
 
     /// This packet awaits confirmation from the user and will be resent after some amount of time
-    Reliable {
-        timer: f32,
-        packet: UserPacket
-    }
+    Reliable { timer: f32, packet: UserPacket },
 }
 
 impl QueuedPacket {
     fn tick(&mut self, dt: f32) {
         match self {
-            Self::Unreliable(_) => (), 
+            Self::Unreliable(_) => (),
             Self::Reliable { timer, packet: _ } => {
                 *timer = (*timer - dt).max(0.0);
             }
@@ -295,36 +301,35 @@ impl QueuedPacket {
             Self::Unreliable(_) => true,
 
             // Reliable packets however, are not
-            Self::Reliable { timer, packet: _ } => *timer == 0.0
+            Self::Reliable { timer, packet: _ } => *timer == 0.0,
         }
     }
 
     fn size(&self) -> usize {
         match self {
             Self::Reliable { timer: _, packet } => packet.size(),
-            Self::Unreliable(packet) => packet.size()
+            Self::Unreliable(packet) => packet.size(),
         }
     }
 
     fn sequence_id(&self) -> Option<PacketSeqId> {
         match self {
             Self::Reliable { timer: _, packet } => packet.sequence_id(),
-            Self::Unreliable(packet) => packet.sequence_id()
+            Self::Unreliable(packet) => packet.sequence_id(),
         }
     }
 
     fn consume(self) -> UserPacket {
         match self {
             Self::Reliable { timer: _, packet } => packet,
-            Self::Unreliable(packet) => packet
+            Self::Unreliable(packet) => packet,
         }
     }
 
     /// Update this packet's timer
     fn set_timer(&mut self, new_time: f32) {
-        match self {
-            Self::Reliable { timer, packet: _ } => {*timer = new_time },
-            _ => {}
+        if let Self::Reliable { timer, packet: _ } = self {
+            *timer = new_time
         }
     }
 }
@@ -341,8 +346,8 @@ impl PacketQueue {
     const INIT_PACKET_CAPACITY: usize = 20;
 
     fn new() -> Self {
-        Self { 
-            queue: VecDeque::with_capacity(Self::INIT_PACKET_CAPACITY), 
+        Self {
+            queue: VecDeque::with_capacity(Self::INIT_PACKET_CAPACITY),
 
             reliable_counter: SequenceCounter::new(0),
         }
@@ -350,9 +355,9 @@ impl PacketQueue {
 }
 
 pub struct ReceivedPacket {
-    pub data: Vec<u8>, 
+    pub data: Vec<u8>,
     pub reliability: Reliability,
-    pub sender: net::SocketAddr
+    pub sender: net::SocketAddr,
 }
 
 struct SocketConnection {
@@ -362,7 +367,7 @@ struct SocketConnection {
     /// The amount of packets per second
     packets_per_second: usize,
 
-    /// The maximum amount of packets 
+    /// The maximum amount of packets
     max_transfer_unit: usize,
 
     /// The builder with which we'll be building all packets
@@ -407,7 +412,7 @@ impl SocketConnection {
     /// Queue a new packet to send through this connection ASAP
     fn queue_packet(&mut self, reliability: Reliability, payload: Vec<u8>) {
         let payload = Rc::new(payload);
-        
+
         // Based on different reliability, we're going to queue them differently
         match reliability {
             // Reliable ordered/unordered get themselves resend timers
@@ -421,20 +426,17 @@ impl SocketConnection {
                 };
 
                 // Insert a new packet that must be dispatched ASAP
-                self.packet_queue.queue.push_back(
-                    QueuedPacket::Reliable {
-                        timer: 0.0, 
-                        packet
-                    }
-                );
-            },
+                self.packet_queue
+                    .queue
+                    .push_back(QueuedPacket::Reliable { timer: 0.0, packet });
+            }
 
             // Unreliable however don't get themselves anything
             Reliability::Unreliable => {
                 // Just push a basic unreliable packet
-                self.packet_queue.queue.push_back(
-                    QueuedPacket::Unreliable(UserPacket::Unreliable { payload })
-                );
+                self.packet_queue
+                    .queue
+                    .push_back(QueuedPacket::Unreliable(UserPacket::Unreliable { payload }));
             }
         }
     }
@@ -451,14 +453,13 @@ impl SocketConnection {
     fn other_acknowledgment_received(&mut self, ack: PacketSeqId) {
         self.other_acknowledged.insert(ack);
     }
-    
+
     /// A separate polling method that specialises in sending packets
     fn poll_send(&mut self, socket: &mut SimpleSock, dt: f32) {
         let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
 
         // We're going to go from back to front
         for ind in (0..self.packet_queue.queue.len()).rev() {
-
             // First we're going to update it
             self.packet_queue.queue[ind].tick(dt);
 
@@ -466,7 +467,9 @@ impl SocketConnection {
             let packet = self.packet_queue.queue[ind].clone();
 
             // If the packet is both acknowledged and ready - remove it from the queue
-            if !( matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) || !packet.is_ready() ) {
+            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id))
+                || packet.is_ready()
+            {
                 self.packet_queue.queue.remove(ind);
             }
 
@@ -480,8 +483,8 @@ impl SocketConnection {
         {
             if should_reorder_packets() {
                 let (a, b) = candidates.as_mut_slices();
-    
-                // All this ugly code to essentially simply shuffle this packet queue 
+
+                // All this ugly code to essentially simply shuffle this packet queue
                 RNG_STATE.with(|rng| a.shuffle(&mut *rng.borrow_mut()));
                 RNG_STATE.with(|rng| b.shuffle(&mut *rng.borrow_mut()));
             }
@@ -491,12 +494,12 @@ impl SocketConnection {
 
         // How many packets can we even send?
         let mut available_packets = (
-            self.packets_per_second as f32 * dt.clamp(0.0, 1.0) // No matter the delta here, we're not going to send more than our PPS in a single second 
+            self.packets_per_second as f32 * dt.clamp(0.0, 1.0)
+            // No matter the delta here, we're not going to send more than our PPS in a single second
         ) as usize;
 
         // While we have some available packet slots
         while available_packets > 0 {
-
             // If there are no packets nor acks to send - we'll stop right here
             if candidates.is_empty() && self.other_acknowledged.is_empty() {
                 break;
@@ -504,13 +507,11 @@ impl SocketConnection {
 
             // While the candidate list is not empty
             while !candidates.is_empty() {
-
                 // Extract the packet
                 let packet = candidates.pop_front().unwrap();
-    
+
                 // If our crate can fit our packet - put it
                 if self.crate_builder.can_fit(packet.size()) {
-
                     // If our packet is unacknowledged - we're going to reset its timer
                     if let Some(seq_id) = packet.sequence_id() {
                         if self.self_acknowledged.contains(&seq_id) {
@@ -518,30 +519,31 @@ impl SocketConnection {
                         }
 
                         // Find it and reset its timer
-                        self.packet_queue.queue.iter_mut()
+                        self.packet_queue
+                            .queue
+                            .iter_mut()
                             .find(|p| matches!(p.sequence_id(), Some(id) if id == seq_id))
                             .unwrap()
                             .set_timer(RESEND_TIMER);
                     }
-                    
+
                     // Consume and push it
                     self.crate_builder.put_user_packet(packet.consume());
-
                 } else {
                     // In any other case - put it in the for-later stack
                     cant_fit_stack.push(packet);
                 }
-
             }
 
             // Now that we fit all our available packets - let's try to fit some acknowledgments
 
             // While there are any acknowledgments and our crate can fit some
-            while !self.other_acknowledged.is_empty() && self.crate_builder.available_ack_slots() > 0 {
-                
+            while !self.other_acknowledged.is_empty()
+                && self.crate_builder.available_ack_slots() > 0
+            {
                 // Take the first one (not in order)
                 let seq_id = self.other_acknowledged.iter().next().copied().unwrap();
-                
+
                 // Remove it (thus marking it as acknowledged)
                 self.other_acknowledged.remove(&seq_id);
 
@@ -564,9 +566,9 @@ impl SocketConnection {
 
         // If after all this we STILL have packets to send - we're going to send them next frame
         while let Some(packet) = candidates.pop_back() {
-            
             // If our packet is un-acknowledged - we're not adding it back on the queue, since it's already there
-            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) {
+            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id))
+            {
                 continue;
             }
 
@@ -576,7 +578,7 @@ impl SocketConnection {
         // Don't forget to clear the acknowledged list of our packets
         self.self_acknowledged.clear();
     }
-    
+
     fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
         // Then send our own
         self.poll_send(socket, dt);
@@ -584,7 +586,6 @@ impl SocketConnection {
 
     /// Process the provided packet (by filtering it out)
     fn process_packet(&mut self, packet: UserPacket) {
-
         match packet.sequence_id() {
             Some(seq_id) => {
                 if self.packet_window.within_bounds(seq_id) {
@@ -592,7 +593,7 @@ impl SocketConnection {
 
                     self.packet_window.mark(seq_id);
                 }
-            },
+            }
             None => {
                 self.channels.process_packet(&self.packet_window, packet);
             }
@@ -618,7 +619,7 @@ pub struct Socket {
     socket: SimpleSock,
     connections: HashMap<net::SocketAddr, SocketConnection>,
 
-    recv_buffer: VecDeque<ReceivedPacket>
+    recv_buffer: VecDeque<ReceivedPacket>,
 }
 
 impl Socket {
@@ -629,7 +630,7 @@ impl Socket {
             socket,
             connections: HashMap::with_capacity(2),
 
-            recv_buffer: VecDeque::new()
+            recv_buffer: VecDeque::new(),
         })
     }
 
@@ -653,16 +654,14 @@ impl Socket {
             .queue_packet(how, data.to_owned());
     }
 
-    /// Poll this socket thus updating its inner receive buffer and sending data. 
+    /// Poll this socket thus updating its inner receive buffer and sending data.
     pub fn poll(&mut self, dt: f32) {
         assert!(dt >= 0.0);
 
         // We're going to collect all packets received by this socket
         while let Some((data, sender)) = self.socket.recv_from() {
-
             // If it's decodable
             if let Ok((acks, packets)) = bitcode::decode::<PacketCrate>(data) {
-
                 // Get or make a new socket connection for this packet
                 let mut connection = self.connections.get_mut(&sender);
 
@@ -673,25 +672,21 @@ impl Socket {
 
                 // Now we're going to iterate every single packet
                 for packet in packets {
-
                     // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
                     if let Some(conn) = connection.as_mut() {
-                        
                         // If this packet has a sequence ID - acknowledge it
                         if let Some(seqid) = packet.sequence_id() {
                             conn.other_acknowledgment_received(seqid);
                         }
-                        
+
                         // And finally - process it (filter, reorder it and so on)
                         conn.process_packet(packet);
-
                     } else {
-
                         // In any other case we're just going to buffer it without a connection
                         self.recv_buffer.push_back(ReceivedPacket {
                             sender: sender,
 
-                            // Even though it's factually incorrect - for us there's no connection, 
+                            // Even though it's factually incorrect - for us there's no connection,
                             // thus this packet is essentially unreliable no matter what
                             reliability: Reliability::Unreliable,
                             data: packet.consume_payload().unwrap(),
@@ -710,10 +705,10 @@ impl Socket {
                 let sender = connection.to;
 
                 // Finally, add it to our queue
-                self.recv_buffer.push_back(ReceivedPacket { 
-                    data: packet.consume_payload().unwrap(), 
-                    reliability, 
-                    sender 
+                self.recv_buffer.push_back(ReceivedPacket {
+                    data: packet.consume_payload().unwrap(),
+                    reliability,
+                    sender,
                 });
             }
         }
@@ -729,8 +724,8 @@ impl Socket {
     }
 
     /// "Establish" a new connection to the provided address.
-    /// 
-    /// This doesn't actually establish anything, it just creates a logical connection between this address. 
+    ///
+    /// This doesn't actually establish anything, it just creates a logical connection between this address.
     /// Note that if the other address doesn't send any packets whatsoever - this connection will close very quickly.
     pub fn connect(&mut self, addr: net::SocketAddr) {
         if self.connections.contains_key(&addr) {

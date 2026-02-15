@@ -84,7 +84,6 @@ mod tests {
             (b"", 0x0),
             (b"a", 0xe8b7be43),
             (b"abc", 0x352441c2),
-
             // Thanks to https://github.com/froydnj/ironclad for the tests vectors
             (b"abcdefghijklmnopqrstuvwxyz", 0x4c2750bd),
             (

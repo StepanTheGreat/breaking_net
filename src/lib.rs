@@ -11,18 +11,15 @@ mod window;
 
 mod utils;
 
-pub use socket::Socket;
 pub use packet::Reliability;
+pub use socket::Socket;
 
 pub(crate) use utils::*;
 
 #[cfg(feature = "stress_testing")]
 pub use socket::{
-    set_packed_corruption_chance,
-    set_packet_loss_chance,
-    set_packed_dublication_chance,
-    set_packet_reorder_chance,
-    reset_stress_environment
+    reset_stress_environment, set_packed_corruption_chance, set_packed_dublication_chance,
+    set_packet_loss_chance, set_packet_reorder_chance,
 };
 
 /// The maximum transport unit for our packets. I'm using a much lower number here to avoid
@@ -30,10 +27,10 @@ pub use socket::{
 /// a network interface.
 pub const MTU_SIZE: usize = 1200;
 
-/// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff. 
-/// 
+/// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
+///
 /// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely
-pub(crate) const MTU_SIZE_PRIVATE: usize = MTU_SIZE+50;
+pub(crate) const MTU_SIZE_PRIVATE: usize = MTU_SIZE + 50;
 
 /// Super tiny macro for constructing [SocketAddr] values
 ///
@@ -70,11 +67,15 @@ pub struct BroadcastListener {
 }
 
 impl BroadcastListener {
-    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {        
-        let socket = SimpleSock::new_ex(socket_addr, MTU_SIZE, SockSettings {
-            reuses_address: true,
-            ..Default::default()
-        })?;
+    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
+        let socket = SimpleSock::new_ex(
+            socket_addr,
+            MTU_SIZE,
+            SockSettings {
+                reuses_address: true,
+                ..Default::default()
+            },
+        )?;
 
         Ok(Self { socket })
     }
@@ -106,13 +107,17 @@ pub struct BroadcastWriter {
 impl BroadcastWriter {
     pub fn new(socket_addr: net::SocketAddr, port: u16) -> io::Result<Self> {
         // The address to which we're going to send packets
-        let broadcast_addr = socket_addr!(broadcast;port).into();
+        let broadcast_addr = socket_addr!(broadcast;port);
 
         // The capacity is at zero, since we're not going to receive anything
-        let socket = SimpleSock::new_ex(socket_addr, 0, SockSettings {
-            broadcaster: true,
-            ..Default::default()
-        })?;
+        let socket = SimpleSock::new_ex(
+            socket_addr,
+            0,
+            SockSettings {
+                broadcaster: true,
+                ..Default::default()
+            },
+        )?;
 
         Ok(Self {
             socket,
@@ -122,7 +127,7 @@ impl BroadcastWriter {
 
     /// Update the port of a broadcast writer
     pub fn set_port(&mut self, new_port: u16) {
-        self.broadcast_addr = socket_addr!(255,255,255,255;new_port).into();
+        self.broadcast_addr = socket_addr!(255,255,255,255;new_port);
     }
 
     /// Send a broadcast message

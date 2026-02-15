@@ -34,7 +34,7 @@ pub enum UserPacket {
     },
     ReliableUnordered {
         seq_id: PacketSeqId,
-        payload: PacketPayload
+        payload: PacketPayload,
     },
     Reliable {
         seq_id: PacketSeqId,
@@ -57,17 +57,17 @@ impl UserPacket {
             Self::Reliable { payload, .. } => {
                 // Sequence ID + Payload length + payload itself
                 size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
-            },
+            }
             Self::ReliableUnordered { payload, .. } => {
                 // Sequence ID + Payload length + payload itself
                 size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
-            },
+            }
             Self::Unreliable { payload } => {
                 // Payload length + payload itself
                 size_of::<u32>() + payload.len()
             }
         };
-        
+
         let tag_size = 1;
 
         tag_size + size
@@ -76,12 +76,12 @@ impl UserPacket {
     /// Get a sequence id of this packet, if present
     pub fn sequence_id(&self) -> Option<PacketSeqId> {
         match self {
-            Self::Reliable { seq_id, ..} => Some(*seq_id),
+            Self::Reliable { seq_id, .. } => Some(*seq_id),
             Self::ReliableUnordered { seq_id, .. } => Some(*seq_id),
             Self::Unreliable { .. } => None,
         }
     }
-    
+
     /// Get this packet's reliability value
     pub fn reliability(&self) -> Reliability {
         match self {
