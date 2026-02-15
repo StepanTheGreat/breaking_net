@@ -9,11 +9,13 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [x] Reliable unordered channel
 - [x] Reliable ordered channel
 - [x] Packet batching
+- [ ] Fixed tickrate
 - [ ] Heartbeat management
 - [ ] Better acknowledgments (using bitmaps)
 - [ ] Fragmentation
 - [ ] Protocol versioning
-- [ ] Congestion control
+- [ ] Congestion control + RTT
+- [ ] Basic DoS prevention
 - [ ] Encryption + Hanshake (probably using `snow`) 
 - [ ] Socket customization (custom PPS, MTU limits, ...)
 
