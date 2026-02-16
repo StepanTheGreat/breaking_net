@@ -1,21 +1,18 @@
-use rand::seq::SliceRandom;
 use socket2 as sock;
 use std::{
     collections::{HashMap, HashSet, VecDeque}, io, mem::MaybeUninit, net, rc::Rc
 };
 
+mod channels;
+mod connection;
+
 use crate::{
     MTU_SIZE, MTU_SIZE_PRIVATE,
     crc32::{CRC32_SIG_LEN, crc32},
-    packet::{PacketAckMap, PacketCrate, PacketCrateBuilder, PacketSeqId, Reliability, UserPacket, build_ack_map},
-    socket::channels::{Channel, ChannelStorage},
-    window::SlidingAckWindow,
+    packet::{PacketCrate, PacketCrateBuilder, Reliability, UserPacket},
 };
 
-mod channels;
-
-/// Resend every 2 frames
-const RESEND_TIMER: f32 = 1.0 / 15.0;
+use connection::SocketConnection;
 
 /// We'll keep up to 512 packets
 const PACKET_WINDOW_BITS: usize = 512;
@@ -109,22 +106,6 @@ mod stress_testing {
 
 #[cfg(feature = "stress_testing")]
 pub use stress_testing::*;
-
-/// A super simple sequence counter, that just increments and wrap arounds sequence ids
-struct SequenceCounter(PacketSeqId);
-impl SequenceCounter {
-    fn new(start: PacketSeqId) -> Self {
-        Self(start)
-    }
-
-    /// Cycle the next value
-    fn next(&mut self) -> PacketSeqId {
-        let next = self.0;
-        self.0 = self.0.wrapping_add(1);
-
-        next
-    }
-}
 
 #[derive(Default, Clone, Copy)]
 pub struct SockSettings {
@@ -239,6 +220,9 @@ impl SimpleSock {
 
         match self.socket.recv_from(buff) {
             Ok((read, addr)) => {
+
+                println!("Received {read} bytes from {}", addr.as_socket().unwrap());
+
                 // We received less bytes than our CRC signature
                 if read < CRC32_SIG_LEN {
                     return None;
@@ -258,6 +242,8 @@ impl SimpleSock {
                     return None;
                 }
 
+                println!("Signatures match!");
+
                 Some((&self.recv_buffer[..read - CRC32_SIG_LEN], addr.as_socket()?))
             }
             Err(_) => None,
@@ -276,349 +262,10 @@ impl SimpleSock {
     }
 }
 
-#[derive(Clone)]
-struct QueuedPacket {
-    packet: UserPacket,
-    timer: Option<f32>
-}
-
-impl QueuedPacket {
-    fn new_reliable(packet: UserPacket, timer: f32) -> Self {
-        Self {
-            packet,
-            timer: Some(timer)
-        }
-    }
-
-    fn new_unreliable(packet: UserPacket) -> Self {
-        Self {
-            packet, 
-            timer: None
-        }
-    }
-
-    fn tick(&mut self, dt: f32) {
-        if let Some(timer) = self.timer.as_mut() {
-            *timer = (*timer - dt).max(0.0);
-        }
-    }
-
-    /// Is this queued packet ready?
-    fn is_ready(&self) -> bool {
-        self.timer.unwrap_or(0.0) == 0.0
-    }
-
-    fn size(&self) -> usize {
-        self.packet.size()
-    }
-
-    fn sequence_id(&self) -> Option<PacketSeqId> {
-        self.packet.sequence_id()
-    }
-
-    fn consume(self) -> UserPacket {
-        self.packet
-    }
-
-    /// Update this packet's timer
-    fn set_timer(&mut self, new_time: f32) {
-        if let Some(timer) = self.timer.as_mut() {
-            *timer = new_time;
-        }
-    }
-}
-
-struct PacketQueue {
-    /// A queue of packets
-    queue: VecDeque<QueuedPacket>,
-
-    /// The counter to obtain sequence IDs from
-    reliable_counter: SequenceCounter,
-}
-
-impl PacketQueue {
-    const INIT_PACKET_CAPACITY: usize = 20;
-
-    fn new() -> Self {
-        Self {
-            queue: VecDeque::with_capacity(Self::INIT_PACKET_CAPACITY),
-
-            reliable_counter: SequenceCounter::new(0),
-        }
-    }
-}
-
 pub struct ReceivedPacket {
     pub data: Vec<u8>,
     pub reliability: Reliability,
     pub sender: net::SocketAddr,
-}
-
-struct SocketConnection {
-    /// The connection is directed to
-    to: net::SocketAddr,
-
-    /// The amount of packets per second
-    packets_per_second: usize,
-
-    /// The maximum amount of packets
-    max_transfer_unit: usize,
-
-    /// The builder with which we'll be building all packets
-    crate_builder: PacketCrateBuilder,
-
-    /// Packets to send with their respected decrementing timers
-    packet_queue: PacketQueue,
-
-    channels: ChannelStorage,
-
-    /// The sliding window for all reliable packets
-    packet_window: SlidingAckWindow,
-
-    /// Sequence IDs of packets that were sent from this connection
-    self_acknowledged: HashSet<PacketSeqId>,
-
-    /// Sequence IDs that were received from the other end
-    other_acknowledged: HashSet<PacketSeqId>,
-}
-
-impl SocketConnection {
-    fn new(to: net::SocketAddr) -> Self {
-        let packets_per_second = 100;
-        let max_transfer_unit = MTU_SIZE_PRIVATE;
-
-        Self {
-            to,
-
-            packets_per_second,
-            max_transfer_unit,
-            crate_builder: PacketCrateBuilder::new(max_transfer_unit),
-            packet_queue: PacketQueue::new(),
-
-            packet_window: SlidingAckWindow::new(128),
-            channels: ChannelStorage::new(),
-
-            self_acknowledged: HashSet::new(),
-            other_acknowledged: HashSet::new(),
-        }
-    }
-
-    /// Queue a new packet to send through this connection ASAP
-    fn queue_packet(&mut self, reliability: Reliability, payload: Vec<u8>) {
-        let payload = Rc::new(payload);
-
-        // Based on different reliability, we're going to queue them differently
-        match reliability {
-            // Reliable ordered/unordered get themselves resend timers
-            Reliability::Reliable | Reliability::ReliableUnordered => {
-                let seq_id = self.packet_queue.reliable_counter.next();
-
-                let packet = if reliability == Reliability::Reliable {
-                    UserPacket::Reliable { seq_id, payload }
-                } else {
-                    UserPacket::ReliableUnordered { seq_id, payload }
-                };
-
-                // Insert a new packet that must be dispatched ASAP
-                self.packet_queue
-                    .queue
-                    .push_back(QueuedPacket::new_reliable(packet, 0.0));
-            }
-
-            // Unreliable however don't get themselves anything
-            Reliability::Unreliable => {
-                // Just push a basic unreliable packet
-                self.packet_queue
-                    .queue
-                    .push_back(QueuedPacket::new_unreliable(UserPacket::Unreliable { payload }));
-            }
-        }
-    }
-
-    /// Acknowledgments have been received on this connection
-    fn own_acknowledgments_received(&mut self, ack_base: PacketSeqId, ack_map: PacketAckMap) {
-        // No acknowledgments
-        if ack_base == 0 && ack_map == 0 {
-            return;
-        }
-
-        // Insert the base
-        self.self_acknowledged.insert(ack_base);
-        
-        // Init the cursor
-        let mut cursor = 1 << (PacketAckMap::BITS-1);
-
-        // For each bit
-        for bind in 0..PacketAckMap::BITS {
-            
-            // If the cursor reads 1 - insert the acknowledgment into the set
-            if ack_map & cursor > 0 {
-                self.self_acknowledged.insert(ack_base + bind+1);
-            } 
-            
-            // Move the cursor to the right
-            cursor >>=  1;
-        }
-    }
-
-    fn other_acknowledgment_received(&mut self, ack: PacketSeqId) {
-        self.other_acknowledged.insert(ack);
-    }
-
-
-    /// Update packets while also collecting them into a queue at the same time
-    fn update_collect_candidates(&mut self, dt: f32, candidates: &mut VecDeque<QueuedPacket>) {
-        // We're going to go from back to front
-        for ind in (0..self.packet_queue.queue.len()).rev() {
-            // First we're going to update it
-            self.packet_queue.queue[ind].tick(dt);
-
-            // Then clone it
-            let packet = self.packet_queue.queue[ind].clone();
-
-            // If the packet is both acknowledged and ready - remove it from the queue
-            if !(matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id)) || !packet.is_ready())
-            {
-                self.packet_queue.queue.remove(ind);
-            }
-
-            // And if ready - add to the candidate list
-            if packet.is_ready() {
-                candidates.push_front(packet);
-            }
-        }
-
-        #[cfg(feature = "stress_testing")]
-        {
-            if should_reorder_packets() {
-                let (a, b) = candidates.as_mut_slices();
-
-                // All this ugly code to essentially simply shuffle this packet queue
-                RNG_STATE.with(|rng| a.shuffle(&mut *rng.borrow_mut()));
-                RNG_STATE.with(|rng| b.shuffle(&mut *rng.borrow_mut()));
-            }
-        }
-    }
-
-    /// A separate polling method that specialises in sending packets
-    fn prepare_and_send(&mut self, socket: &mut SimpleSock, dt: f32) {
-        let mut candidates = VecDeque::with_capacity(self.packet_queue.queue.len());
-        self.update_collect_candidates(dt, &mut candidates);
-
-        let mut cant_fit_stack = Vec::new();
-
-        // How many packets can we even send?
-        let mut available_packets = (
-            self.packets_per_second as f32 * dt.clamp(0.0, 1.0)
-            // No matter the delta here, we're not going to send more than our PPS in a single second
-        ) as usize;
-
-        // Build our acknowledgment map
-        let (ack_base, ack_map) = {
-            let mut acknowledgments: Vec<PacketSeqId> = self.other_acknowledged.iter().copied().collect();
-            acknowledgments.sort();
-
-            build_ack_map(&acknowledgments)
-        };
-
-        // Only keep acknowledgments that didn't fit into our acknowledgment map
-        self.other_acknowledged.retain(|seq_id| *seq_id > ack_base+PacketAckMap::BITS);
-
-        // While we have some available packet slots
-        while available_packets > 0 {
-            // If there are no packets nor acks to send - we'll stop right here
-            if candidates.is_empty() && self.other_acknowledged.is_empty() {
-                break;
-            }
-
-            // Put our acknowledgments
-            self.crate_builder.put_acknowledgments(ack_base, ack_map);
-
-            // While the candidate list is not empty
-            while !candidates.is_empty() {
-                // Extract the packet
-                let packet = candidates.pop_front().unwrap();
-
-                // If our crate can fit our packet - put it
-                if self.crate_builder.can_fit(packet.size()) {
-                    // If our packet is unacknowledged - we're going to reset its timer
-                    if let Some(seq_id) = packet.sequence_id() {
-                        if self.self_acknowledged.contains(&seq_id) {
-                            continue;
-                        }
-
-                        // Find it and reset its timer
-                        self.packet_queue
-                            .queue
-                            .iter_mut()
-                            .find(|p| matches!(p.sequence_id(), Some(id) if id == seq_id))
-                            .unwrap()
-                            .set_timer(RESEND_TIMER);
-                    }
-
-                    // Consume and push it
-                    self.crate_builder.put_user_packet(packet.consume());
-                } else {
-                    // In any other case - put it in the for-later stack
-                    cant_fit_stack.push(packet);
-                }
-            }
-
-            // Now that we fit all our available packets - let's try to fit some acknowledgments
-
-            // Finally, our crate is ready to go. All we need to do is build and send it
-            let data = self.crate_builder.build();
-            let _ = socket.send_to(data, self.to);
-
-            // Decrement the amount of packets we got
-            available_packets -= 1;
-
-            // Because we'll have some packets that we couldn't fit - we're going to put them back onto the candidate list
-            while let Some(packet) = cant_fit_stack.pop() {
-                candidates.push_front(packet);
-            }
-        }
-
-        // If after all this we STILL have packets to send - we're going to send them next frame
-        while let Some(packet) = candidates.pop_back() {
-            // If our packet is un-acknowledged - we're not adding it back on the queue, since it's already there
-            if !matches!(packet.sequence_id(), Some(seq_id) if !self.self_acknowledged.contains(&seq_id))
-            {
-                continue;
-            }
-
-            self.packet_queue.queue.push_front(packet);
-        }
-
-        // Don't forget to clear the acknowledged list of our packets
-        self.self_acknowledged.clear();
-    }
-
-    fn poll(&mut self, socket: &mut SimpleSock, dt: f32) {
-        // Then send our own packets
-        self.prepare_and_send(socket, dt);
-    }
-
-    /// Process the provided packet (by filtering it out)
-    fn process_packet(&mut self, packet: UserPacket) {
-        match packet.sequence_id() {
-            Some(seq_id) => {
-                if self.packet_window.within_bounds(seq_id) {
-                    self.channels.process_packet(&self.packet_window, packet);
-
-                    self.packet_window.mark(seq_id);
-                }
-            }
-            None => {
-                self.channels.process_packet(&self.packet_window, packet);
-            }
-        }
-    }
-
-    /// Receive all *available* packets
-    fn recv_packet(&mut self) -> Option<UserPacket> {
-        self.channels.recv_packet(&self.packet_window)
-    }
 }
 
 pub enum SocketEvent {
@@ -632,7 +279,11 @@ pub enum SocketEvent {
 
 pub struct Socket {
     socket: SimpleSock,
+
+    packet_builder: PacketCrateBuilder,
     connections: HashMap<net::SocketAddr, SocketConnection>,
+
+    requested_connections: HashSet<net::SocketAddr>,
 
     recv_buffer: VecDeque<ReceivedPacket>,
 }
@@ -643,7 +294,10 @@ impl Socket {
 
         Ok(Self {
             socket,
+
+            packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
             connections: HashMap::with_capacity(2),
+            requested_connections: HashSet::new(),
 
             recv_buffer: VecDeque::new(),
         })
@@ -663,47 +317,67 @@ impl Socket {
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
         assert!(data.len() <= MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
-        self.connections
-            .entry(*to)
-            .or_insert(SocketConnection::new(*to))
-            .queue_packet(how, data.to_owned());
+        match self.connections.get_mut(to) {
+            Some(connection) => {
+
+                // If there's a connection - send through it
+                connection.queue_packet(how, data.to_owned());
+            },
+            None => {
+                // In any other case we'll construct a new unreliable packet with nothing and send it
+                self.packet_builder.put_user_packet(UserPacket::new_unreliable(Rc::new(data.to_owned())));
+                self.socket.send_to(self.packet_builder.build(), *to).unwrap();
+
+                // Add it to our requested connections
+                self.requested_connections.insert(*to);
+            }
+        }
     }
 
     /// Receive and distribute (to connections) packets
     fn receive_packets(&mut self) {
         while let Some((data, sender)) = self.socket.recv_from() {
+
             // If it's decodable
-            if let Ok((ack_base, ack_map, packets)) = bitcode::decode::<PacketCrate>(data) {
-                // Get or make a new socket connection for this packet
-                let mut connection = self.connections.get_mut(&sender);
+            let (ack_base, ack_map, packets) = match bitcode::decode::<PacketCrate>(data) {
+                Ok(packet) => packet,
+                Err(_) => continue
+            };
 
-                // If this is a packet from a known connection - let it mark all the acknowledgments it needs
+            // If we received a packet from a requested address - we'll automatically create a connection to it
+            if self.requested_connections.remove(&sender) {
+                self.connect(sender);
+            }
+
+            // Get or make a new socket connection for this packet
+            let mut connection = self.connections.get_mut(&sender);
+
+            // If this is a packet from a known connection - let it mark all the acknowledgments it needs
+            if let Some(conn) = connection.as_mut() {
+                conn.own_acknowledgments_received(ack_base, ack_map);
+            }
+
+            // Now we're going to iterate every single packet
+            for packet in packets {
+                // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
                 if let Some(conn) = connection.as_mut() {
-                    conn.own_acknowledgments_received(ack_base, ack_map);
-                }
-
-                // Now we're going to iterate every single packet
-                for packet in packets {
-                    // If we have a connection and our packet contains a sequence ID - we're going to notify our connection about this sequence ID
-                    if let Some(conn) = connection.as_mut() {
-                        // If this packet has a sequence ID - acknowledge it
-                        if let Some(seqid) = packet.sequence_id() {
-                            conn.other_acknowledgment_received(seqid);
-                        }
-
-                        // And finally - process it (filter, reorder it and so on)
-                        conn.process_packet(packet);
-                    } else {
-                        // In any other case we're just going to buffer it without a connection
-                        self.recv_buffer.push_back(ReceivedPacket {
-                            sender: sender,
-
-                            // Even though it's factually incorrect - for us there's no connection,
-                            // thus this packet is essentially unreliable no matter what
-                            reliability: Reliability::Unreliable,
-                            data: packet.consume_payload().unwrap(),
-                        });
+                    // If this packet has a sequence ID - acknowledge it
+                    if let Some(seqid) = packet.sequence_id() {
+                        conn.other_acknowledgment_received(seqid);
                     }
+
+                    // And finally - process it (filter, reorder it and so on)
+                    conn.process_packet(packet);
+                } else {
+                    // In any other case we're just going to buffer it without a connection
+                    self.recv_buffer.push_back(ReceivedPacket {
+                        sender: sender,
+
+                        // Even though it's factually incorrect - for us there's no connection,
+                        // thus this packet is essentially unreliable no matter what
+                        reliability: Reliability::Unreliable,
+                        data: packet.consume_payload().unwrap(),
+                    });
                 }
             }
         }
@@ -712,11 +386,11 @@ impl Socket {
     /// Poll all our connections and 
     fn poll_connections(&mut self, dt: f32) {
         for (_, connection) in self.connections.iter_mut() {
-            connection.poll(&mut self.socket, dt);
+            connection.poll(&mut self.socket, &mut self. packet_builder, dt);
 
             while let Some(packet) = connection.recv_packet() {
                 let reliability = packet.reliability();
-                let sender = connection.to;
+                let sender = connection.to_addr();
 
                 // Finally, add it to our queue
                 self.recv_buffer.push_back(ReceivedPacket {
@@ -753,11 +427,9 @@ impl Socket {
     /// This doesn't actually establish anything, it just creates a logical connection between this address.
     /// Note that if the other address doesn't send any packets whatsoever - this connection will close very quickly.
     pub fn connect(&mut self, addr: net::SocketAddr) {
-        if self.connections.contains_key(&addr) {
-            return;
+        if !self.connections.contains_key(&addr) {
+            self.connections.insert(addr, SocketConnection::new(addr));
         }
-
-        self.connections.insert(addr, SocketConnection::new(addr));
     }
 
     /// How many packets are available

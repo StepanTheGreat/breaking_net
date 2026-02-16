@@ -4,7 +4,7 @@
 //!
 //! Some packets serve a bit more purposes than that, but the primary usecases are these.
 
-use std::collections::VecDeque;
+use std::{cmp::Reverse, collections::VecDeque};
 
 use crate::{
     Reliability,
@@ -49,6 +49,9 @@ impl Channel for ReliableChannel {
         // The filter here is simple: if our packet is not yet marked - add it to the receiving buffer
         if !window.is_marked(seq_id) {
             self.recv_buff.push(packet);
+
+            // Sort them in descending order
+            self.recv_buff.sort_by_key(|p| Reverse(p.sequence_id().unwrap()));
         }
     }
 
@@ -58,18 +61,14 @@ impl Channel for ReliableChannel {
             return None;
         }
 
-        // This will simply find the packet with smallest sequence ID
-        let (mn_ind, seq_id) = self
-            .recv_buff
-            .iter()
-            .map(|p| p.sequence_id().unwrap())
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.cmp(b))
+        let seq_id = self.recv_buff.last()
+            .unwrap()
+            .sequence_id()
             .unwrap();
 
         // If the packet's sequence ID is actually now considered "old". Only then we can receive said packet
         if seq_id < window.window_position() {
-            Some(self.recv_buff.swap_remove(mn_ind))
+            Some(self.recv_buff.pop().unwrap())
         } else {
             None
         }

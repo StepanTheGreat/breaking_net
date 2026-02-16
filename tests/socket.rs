@@ -19,6 +19,9 @@ fn test_basic_sockets() {
     let msgs: [&[u8]; _] = [b"Hello", b" ", b"World", b"!"];
     let rel = Reliability::Unreliable;
 
+    sock_a.connect(sock_b.addr());
+    sock_b.connect(sock_a.addr());
+
     // Send them 1 by 1
     for msg in msgs {
         sock_a.send_to(&sock_b.addr(), msg, rel);
@@ -67,6 +70,9 @@ fn test_mtu_limits() {
     let message = &[0u8; MTU_SIZE];
     let rel = Reliability::Reliable;
 
+    sock_a.connect(sock_b.addr());
+    sock_b.connect(sock_a.addr());
+
     // Send them 1 by 1
     sock_a.send_to(&sock_b.addr(), message, rel);
     sock_b.send_to(&sock_a.addr(), message, rel);
@@ -99,7 +105,7 @@ fn test_corruption_detection() {
     // Poll our sockets
     poll_socks!(DT, [sock_a, sock_b]);
 
-    // Ensure that our socket DOESN'T receive that packet
+    // Ensure that our socket receives that packet
     assert!(sock_b.recv_from().is_some());
 
     // Guarantee corruption

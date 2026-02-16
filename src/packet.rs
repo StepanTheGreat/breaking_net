@@ -30,84 +30,93 @@ pub enum Reliability {
 }
 
 #[derive(Clone, Encode, Decode)]
-pub enum UserPacket {
-    Unreliable {
-        payload: PacketPayload,
-    },
+pub enum UserPacketKind {
+    Unreliable,
     ReliableUnordered {
-        seq_id: PacketSeqId,
-        payload: PacketPayload,
+        seq_id: PacketSeqId
     },
     Reliable {
-        seq_id: PacketSeqId,
-        payload: PacketPayload,
-    },
+        seq_id: PacketSeqId
+    }
+}
+
+#[derive(Clone, Encode, Decode)]
+pub struct UserPacket {
+    kind: UserPacketKind,
+    payload: PacketPayload,
 }
 
 impl UserPacket {
+    fn new(kind: UserPacketKind, payload: PacketPayload) -> Self {
+        Self {
+            kind, 
+            payload
+        }
+    }
+
+    pub fn new_reliable(seq_id: PacketSeqId, payload: PacketPayload) -> Self {
+        Self::new(UserPacketKind::Reliable { seq_id }, payload)
+    }
+
+    pub fn new_reliable_unordered(seq_id: PacketSeqId, payload: PacketPayload) -> Self {
+        Self::new(UserPacketKind::ReliableUnordered { seq_id }, payload)
+    }
+
+    pub fn new_unreliable(payload: PacketPayload) -> Self {
+        Self::new(UserPacketKind::Unreliable, payload)
+    }
+
     pub fn is_reliable(&self) -> bool {
-        match self {
-            Self::Reliable { .. } => true,
-            Self::ReliableUnordered { .. } => true,
-            Self::Unreliable { .. } => false,
+        match self.kind {
+            UserPacketKind::Reliable { .. } => true,
+            UserPacketKind::ReliableUnordered { .. } => true,
+            UserPacketKind::Unreliable => false,
         }
     }
 
     /// A conservative estimate of the total packet size
     pub fn size(&self) -> usize {
-        let size = match self {
-            Self::Reliable { payload, .. } => {
-                // Sequence ID + Payload length + payload itself
-                size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
-            }
-            Self::ReliableUnordered { payload, .. } => {
-                // Sequence ID + Payload length + payload itself
-                size_of::<PacketSeqId>() + size_of::<u32>() + payload.len()
-            }
-            Self::Unreliable { payload } => {
-                // Payload length + payload itself
-                size_of::<u32>() + payload.len()
-            }
+        // The cost of the payload (length + data)
+        let payload_size = size_of::<u32>() + self.payload.len();
+
+        // The cost of the sequence ID in reliable packets
+        let seq_id_size = match self.kind {
+            UserPacketKind::ReliableUnordered { .. } => size_of::<PacketSeqId>(),
+            UserPacketKind::Reliable { .. } => size_of::<PacketSeqId>(),
+            UserPacketKind::Unreliable => 0
         };
 
+        // The cost of the enum tag for our packet
         let tag_size = 1;
 
-        tag_size + size
+        tag_size + payload_size + seq_id_size
     }
 
     /// Get a sequence id of this packet, if present
     pub fn sequence_id(&self) -> Option<PacketSeqId> {
-        match self {
-            Self::Reliable { seq_id, .. } => Some(*seq_id),
-            Self::ReliableUnordered { seq_id, .. } => Some(*seq_id),
-            Self::Unreliable { .. } => None,
+        match self.kind {
+            UserPacketKind::Reliable { seq_id, .. } => Some(seq_id),
+            UserPacketKind::ReliableUnordered { seq_id, .. } => Some(seq_id),
+            UserPacketKind::Unreliable => None,
         }
     }
 
     /// Get this packet's reliability value
     pub fn reliability(&self) -> Reliability {
-        match self {
-            Self::Reliable { .. } => Reliability::Reliable,
-            Self::ReliableUnordered { .. } => Reliability::ReliableUnordered,
-            Self::Unreliable { .. } => Reliability::Unreliable,
+        match self.kind {
+            UserPacketKind::Reliable { .. } => Reliability::Reliable,
+            UserPacketKind::ReliableUnordered { .. } => Reliability::ReliableUnordered,
+            UserPacketKind::Unreliable => Reliability::Unreliable,
         }
     }
 
     /// Consume this packet's payload. This will return [None] if it still has active references
     pub fn consume_payload(self) -> Option<Vec<u8>> {
-        match self {
-            Self::Reliable { seq_id: _, payload } => Rc::into_inner(payload),
-            Self::ReliableUnordered { seq_id: _, payload } => Rc::into_inner(payload),
-            Self::Unreliable { payload } => Rc::into_inner(payload),
-        }
+        Rc::into_inner(self.payload)
     }
 
     pub fn payload(&self) -> &[u8] {
-        match self {
-            Self::Reliable { seq_id: _, payload } => payload.as_slice(),
-            Self::ReliableUnordered { seq_id: _, payload } => payload.as_slice(),
-            Self::Unreliable { payload } => payload.as_slice(),
-        }
+        self.payload.as_slice()
     }
 }
 
