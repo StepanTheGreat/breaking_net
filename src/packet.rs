@@ -257,10 +257,10 @@ pub fn build_ack_map(acks: &[PacketSeqId]) -> (PacketSeqId, PacketAckMap) {
     // Get the base
     let base = acks[0];
 
-    for ack in acks[1..].iter().copied() {
+    for ack in acks.iter().copied() {
         
         // Compute the delta (binary index)
-        let bind = ack-(base+1);
+        let bind = ack-base;
 
         // We'll stop here
         if bind >= PacketAckMap::BITS {

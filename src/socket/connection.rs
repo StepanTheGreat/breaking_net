@@ -171,10 +171,8 @@ impl SocketConnection {
 
         // For each bit
         for bind in 0..PacketAckMap::BITS {
-            
-            // If the cursor reads 1 - insert the acknowledgment into the set
             if ack_map & cursor > 0 {
-                self.self_acknowledged.insert(ack_base + bind+1);
+                self.self_acknowledged.insert(ack_base + bind);
             } 
             
             // Move the cursor to the right
