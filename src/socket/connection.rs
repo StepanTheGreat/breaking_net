@@ -1,6 +1,6 @@
-use rand::seq::SliceRandom;
+use rand::seq::{self, SliceRandom};
 use std::{
-    collections::{HashSet, VecDeque}, net, rc::Rc
+    collections::{HashMap, HashSet, VecDeque}, net, rc::Rc
 };
 
 use crate::{
@@ -9,14 +9,19 @@ use crate::{
     window::SlidingAckWindow,
 };
 
-/// Resend every 2 frames
+/// Resend 15 times per second
 const RESEND_TIMER: f32 = 1.0 / 15.0;
+
+const RTT_SMOOTH_FACTOR: f32 = 0.4;
+const RTT_MAX_TIME: f32 = 1.0;
+
+const INIT_RTT: f32 = 0.0;
 
 /// A super simple sequence counter, that just increments and wrap arounds sequence ids
 struct SequenceCounter(PacketSeqId);
 impl SequenceCounter {
-    fn new(start: PacketSeqId) -> Self {
-        Self(start)
+    fn new() -> Self {
+        Self(0)
     }
 
     /// Cycle the next value
@@ -104,6 +109,18 @@ pub struct SocketConnection {
 
     /// Sequence IDs of packets that were **received** by us
     other_acknowledged: HashSet<PacketSeqId>,
+
+    /// The amount packets we sent
+    packets_sent: u32,
+
+    /// The amount of packets we lost
+    packets_lost: u32,
+
+    /// A map of rtt timers
+    rtt_timers: HashMap<PacketSeqId, f32>,
+
+    /// The approximate RTT
+    rtt: f32
 }
 
 impl SocketConnection {
@@ -116,13 +133,19 @@ impl SocketConnection {
             packets_per_second,
             
             packet_queue: VecDeque::new(),
-            seq_counter: SequenceCounter::new(0),
+            seq_counter: SequenceCounter::new(),
 
             packet_window: SlidingAckWindow::new(128),
             channels: ChannelStorage::new(),
 
             self_acknowledged: HashSet::new(),
             other_acknowledged: HashSet::new(),
+
+            packets_sent: 0,
+            packets_lost: 0,
+
+            rtt_timers: HashMap::new(),
+            rtt: INIT_RTT
         }
     }
 
@@ -162,17 +185,18 @@ impl SocketConnection {
         if ack_base == 0 && ack_map == 0 {
             return;
         }
-
-        // Insert the base
-        self.self_acknowledged.insert(ack_base);
         
         // Init the cursor
         let mut cursor = 1 << (PacketAckMap::BITS-1);
 
         // For each bit
         for bind in 0..PacketAckMap::BITS {
-            if ack_map & cursor > 0 {
-                self.self_acknowledged.insert(ack_base + bind);
+            if (ack_map & cursor) > 0 {
+
+                let seq_id = ack_base + bind;
+
+                self.self_acknowledged.insert(seq_id);
+                self.mark_rtt_received(seq_id);
             } 
             
             // Move the cursor to the right
@@ -223,6 +247,41 @@ impl SocketConnection {
         }
     }
 
+    /// Update RTT timers and when some of them are maxed out - remove them 
+    fn update_rtt_timers(&mut self, dt: f32) {
+        self.rtt_timers.retain(|_, timer| {
+            *timer = (*timer + dt).min(1.0);
+
+            // If our packed timed out
+            if *timer == RTT_MAX_TIME {
+
+                // We would also like to increment the packet loss counter
+                self.packets_lost += 1;
+
+                false
+            } else {
+                true
+            }
+
+        });
+    }
+
+    /// Mark this sequence ID as received in the RTT calculations
+    fn mark_rtt_received(&mut self, seq_id: PacketSeqId) {
+        // If it's actually present - we're going to pop it
+
+        if let Some(time) = self.rtt_timers.remove(&seq_id) {
+            // Update our rtt according to the smoothed average formula
+            
+            self.rtt += RTT_SMOOTH_FACTOR*(time-self.rtt);
+        }
+    }
+
+    /// Add an RTT tracker 
+    fn add_rtt_tracker(&mut self, ack: PacketSeqId) {
+        self.rtt_timers.insert(ack, 0.0);
+    }
+
     /// A separate polling method that specialises in sending packets
     fn prepare_and_send(
         &mut self, 
@@ -241,6 +300,22 @@ impl SocketConnection {
             // No matter the delta here, we're not going to send more than our PPS in a single second
         ) as usize;
 
+        // Add ONE acknowledgment ID into our table
+        for packet in candidates.iter() {
+            if let Some(seq_id) = packet.sequence_id() {
+                if self.rtt_timers.contains_key(&seq_id) {
+                    continue;
+                }
+
+                // Insert it at 0
+                self.add_rtt_tracker(seq_id);
+                
+                self.packets_sent += 1;
+
+                break
+            }
+        }
+
         // Build our acknowledgment map
         let (ack_base, ack_map) = {
             let mut acknowledgments: Vec<PacketSeqId> = self.other_acknowledged.iter().copied().collect();
@@ -255,7 +330,7 @@ impl SocketConnection {
         // While we have some available packet slots
         while available_packets > 0 {
             // If there are no packets nor acks to send - we'll stop right here
-            if candidates.is_empty() && self.other_acknowledged.is_empty() {
+            if candidates.is_empty() && ack_map == 0 {
                 break;
             }
 
@@ -323,6 +398,9 @@ impl SocketConnection {
     }
 
     pub fn poll(&mut self, socket: &mut SimpleSock, crate_builder: &mut PacketCrateBuilder, dt: f32) {
+        // Update our RTT timers
+        self.update_rtt_timers(dt);
+
         // Then send our own packets
         self.prepare_and_send(socket, crate_builder, dt);
     }
@@ -331,7 +409,7 @@ impl SocketConnection {
     pub fn process_packet(&mut self, packet: UserPacket) {
         match packet.sequence_id() {
             Some(seq_id) => {
-                if self.packet_window.within_bounds(seq_id) {
+                if self.packet_window.within_bounds(seq_id) && !self.packet_window.is_marked(seq_id) {
                     self.channels.process_packet(&self.packet_window, packet);
 
                     self.packet_window.mark(seq_id);
@@ -346,6 +424,23 @@ impl SocketConnection {
     /// Receive all *available* packets
     pub fn recv_packet(&mut self) -> Option<UserPacket> {
         self.channels.recv_packet(&self.packet_window)
+    }
+
+    /// Get the average round trip time (in seconds)
+    pub fn round_trip_time(&self) -> f32 {
+        self.rtt
+    }
+
+    /// Get the average packet loss (between 0 and 1)
+    pub fn packet_loss(&self) -> f32 {
+        let (sent, lost) = (self.packets_sent, self.packets_lost);
+
+        // If we didn't send anything - automatically return 0.0
+        if sent == 0 {
+            return  0.0;
+        }
+
+        (lost as f32 / sent as f32).clamp(0.0, 1.0)
     }
 
     pub fn to_addr(&self) -> net::SocketAddr {

@@ -4,7 +4,7 @@
 //!
 //! Some packets serve a bit more purposes than that, but the primary usecases are these.
 
-use std::{cmp::Reverse, collections::VecDeque};
+use std::{cmp::Reverse, collections::{BTreeMap, VecDeque}};
 
 use crate::{
     Reliability,
@@ -21,17 +21,47 @@ pub trait Channel {
     fn recv_packet(&mut self, window: &SlidingAckWindow) -> Option<UserPacket>;
 }
 
+struct ReorderedPacket {
+    packet: UserPacket,
+    
+    // This is reversed to ensure that we sort from the smallest to the biggest sequenced packet ID
+    seq_id: Reverse<PacketSeqId>
+}
+
+impl ReorderedPacket {
+    pub fn new(packet: UserPacket) -> Self {
+        let seq_id = packet.sequence_id().expect("Reordered packets must always contain a sequence ID");
+
+        Self {
+            seq_id: Reverse(seq_id),
+            packet,
+        }
+    }
+}
+
+impl PartialEq for ReorderedPacket {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq_id.eq(&other.seq_id)
+    }
+}
+
+impl PartialOrd for ReorderedPacket {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.seq_id.partial_cmp(&other.seq_id)
+    }
+}
+
 /// A fully reliable channel (reliable and ordered). The slowest, but most reliable
 struct ReliableChannel {
     /// The receive buffer
-    recv_buff: Vec<UserPacket>,
+    recv_buff: BTreeMap<PacketSeqId, UserPacket>,
     window_pos: PacketSeqId,
 }
 
 impl ReliableChannel {
     fn new() -> Self {
         Self {
-            recv_buff: Vec::new(),
+            recv_buff: BTreeMap::new(),
             window_pos: 0,
         }
     }
@@ -48,10 +78,7 @@ impl Channel for ReliableChannel {
 
         // The filter here is simple: if our packet is not yet marked - add it to the receiving buffer
         if !window.is_marked(seq_id) {
-            self.recv_buff.push(packet);
-
-            // Sort them in descending order
-            self.recv_buff.sort_by_key(|p| Reverse(p.sequence_id().unwrap()));
+            self.recv_buff.insert(seq_id, packet);
         }
     }
 
@@ -61,14 +88,11 @@ impl Channel for ReliableChannel {
             return None;
         }
 
-        let seq_id = self.recv_buff.last()
-            .unwrap()
-            .sequence_id()
-            .unwrap();
+        let seq_id = *self.recv_buff.first_key_value().unwrap().0;
 
         // If the packet's sequence ID is actually now considered "old". Only then we can receive said packet
         if seq_id < window.window_position() {
-            Some(self.recv_buff.pop().unwrap())
+            Some(self.recv_buff.pop_first().unwrap().1)
         } else {
             None
         }

@@ -226,7 +226,7 @@ fn test_reordering_packets() {
 
 /// Test a continous message dialogue
 #[test]
-fn test_hundreds_of_packets() {
+fn test_continuous_reliable_dialogue() {
     reset_stress_environment();
 
     let mut sock_a = Socket::new(ADDR_A).unwrap();
@@ -240,27 +240,81 @@ fn test_hundreds_of_packets() {
     set_packet_reorder_chance(1.0);
     set_packed_dublication_chance(1.0);
 
-    const N: u32 = 258;
+    const MESSAGES: u8 = 20;
+    const MAX_MESSAGES: u8 = 4;
 
-    // Let's send 258 integers
-    for num in 0..=N {
-        // We're going to send them to each other
-        sock_a.send_to(&sock_b.addr(), &num.to_be_bytes(), Reliability::Reliable);
-        sock_b.send_to(&sock_a.addr(), &num.to_be_bytes(), Reliability::Reliable);
+    // For this amount of messages
+    let mut messages = MESSAGES;
+
+    while messages > 0 {
+
+        // We're going to send an arbitrary amount of messages per "frame"
+        let times = rand::random_range(0..messages.min(MAX_MESSAGES))+1;
+
+        for _ in 0..times {
+            let msg = [messages; 220]; 
+
+            sock_a.send_to(&sock_b.addr(), &msg, Reliability::Reliable);
+            sock_b.send_to(&sock_a.addr(), &msg, Reliability::Reliable);
+
+            messages -= 1;
+        }
+
+        // Poll them
+        poll_socks!(DT, [sock_a, sock_b, sock_a]);
     }
 
-    // Succeeds in only 6 polls total
-    poll_socks!(6, DT, [sock_a, sock_b]);
-
     // Now receive and check
-    for num in 0..=N {
+    let mut messages = MESSAGES;
+    while sock_a.has_packets() || sock_b.has_packets() {
+        poll_socks!(DT, [sock_a, sock_b, sock_a]);
+
         let pack_b = sock_a.recv_from().unwrap().data;
         let pack_a = sock_b.recv_from().unwrap().data;
 
-        assert_eq!(&pack_b, &num.to_be_bytes());
+        assert_eq!(pack_b[0], messages);
+
         assert_eq!(&pack_b, &pack_a);
+
+        messages -= 1;
     }
 
     assert!(!sock_a.has_packets());
     assert!(!sock_b.has_packets());
+}
+
+
+/// Test a continous message dialogue
+#[test]
+fn test_round_trip_time() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    // First we're going to connect them together
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
+    // The round trip time should be 0 right at the start
+    assert_eq!(sock_a.round_trip_time(sock_b.addr()).unwrap(), 0.0);
+
+    let msg = b"Test message";
+    
+    // Send a packet to B
+    sock_a.send_to(&sock_b.addr(), msg, Reliability::Reliable);
+
+    // Poll our socket 3 times, without polling B (to simulate delay from B)
+    poll_socks!(2, DT, [sock_a]);
+
+    // Finally, actually poll both of them
+    poll_socks!(DT, [sock_b, sock_a]);
+
+    // Receive the packet
+    sock_b.recv_from().unwrap();
+
+    // The round trip time must be larger than 0 
+    assert!(sock_a.round_trip_time(sock_b.addr()).unwrap() > 0.0);
+
+
 }

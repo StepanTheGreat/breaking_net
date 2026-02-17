@@ -114,16 +114,10 @@ impl BitSet {
     }
 }
 
-/// The sliding window structure that helps keeping track of acknowledged packets.
-///
-/// The way it works, is the window contains the general offset (the latest packet), and frames that go **before** this offset packet. It can be
-/// visualised like so: (latest)[frame_1][frame_2][frame_3][frame_n]
-///
-/// When we add a new packet, we compare it against our latest packet.
-/// - If it's larger - we have to shift our entire structure to the left, based on the
-///   delta between the new packet and the latest one. After that we must mark our former packet the same way.
-/// - If it's smaller - we must mark a bit in one of the available windows. If it's further than that - we won't mark anything.
-/// - In any other case we don't do anything.
+/// The sliding window helps tracking unacknowledged packets. 
+/// It has a base and a bitset, where each received packet coming after the base is marked with 1.
+/// 
+/// The window automatically slides whenever the window's lowest packet (the base) is received. 
 pub struct SlidingAckWindow {
     /// The position of the window (the oldest packet) to not get acknowledged
     window_pos: PacketSeqId,

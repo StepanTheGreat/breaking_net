@@ -220,9 +220,6 @@ impl SimpleSock {
 
         match self.socket.recv_from(buff) {
             Ok((read, addr)) => {
-
-                println!("Received {read} bytes from {}", addr.as_socket().unwrap());
-
                 // We received less bytes than our CRC signature
                 if read < CRC32_SIG_LEN {
                     return None;
@@ -241,8 +238,6 @@ impl SimpleSock {
                 if self.recv_buffer[read - CRC32_SIG_LEN..read] != crc_bytes {
                     return None;
                 }
-
-                println!("Signatures match!");
 
                 Some((&self.recv_buffer[..read - CRC32_SIG_LEN], addr.as_socket()?))
             }
@@ -435,5 +430,17 @@ impl Socket {
     /// How many packets are available
     pub fn packets(&self) -> usize {
         self.recv_buffer.len()
+    }
+
+    /// Get round trip time statistics (measured in seconds) for the provided address (if a connection exists)
+    pub fn round_trip_time(&self, addr: net::SocketAddr) -> Option<f32> {
+        self.connections.get(&addr)
+            .map(|connection| connection.round_trip_time())
+    }
+
+    /// Get the average packet loss (betweeen 0 and 1) for the provided address (if a connection exists)
+    pub fn packet_loss(&self, addr: net::SocketAddr) -> Option<f32> {
+        self.connections.get(&addr)
+            .map(|connection| connection.packet_loss())
     }
 }
