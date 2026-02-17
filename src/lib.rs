@@ -1,5 +1,6 @@
 use std::io;
 use std::net;
+use std::sync::LazyLock;
 
 use crate::socket::SimpleSock;
 use crate::socket::SockSettings;
@@ -31,6 +32,17 @@ pub(crate) const MTU_SIZE_PRIVATE: usize = 1200;
 /// fragmentation on most networks, though usually you're supposed to query it directly from
 /// a network interface.
 pub const MTU_SIZE: usize = MTU_SIZE_PRIVATE-50;
+
+/// The protocol signature used when verifying received packets from other sockets 
+/// 
+/// A signature mismatch will cause packets to simply not get received (because there's an obvious signature mismatch)
+pub(crate) static PROTOCOL_SIGNATURE: LazyLock<&'static str> = LazyLock::new(|| {     
+    // Format our signature as the combination of our protocol's name and version
+    let signature = format!("bnet{}", env!("CARGO_PKG_VERSION"));
+
+    // Leak it for the entire duration of the program
+    signature.leak()
+});
 
 /// Super tiny macro for constructing [SocketAddr] values
 ///

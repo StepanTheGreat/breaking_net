@@ -7,15 +7,10 @@ mod channels;
 mod connection;
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE,
-    crc32::{CRC32_SIG_LEN, crc32},
-    packet::{PacketCrate, PacketCrateBuilder, Reliability, UserPacket},
+    MTU_SIZE, MTU_SIZE_PRIVATE, PROTOCOL_SIGNATURE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, Reliability, UserPacket}
 };
 
 use connection::SocketConnection;
-
-/// We'll keep up to 512 packets
-const PACKET_WINDOW_BITS: usize = 512;
 
 /// This small module implements utilities for testing different network environments. The main goal is to be able to "reproduce"
 /// network instability, to workaround those in tests (because tests are in most cases run locally)
@@ -120,18 +115,24 @@ pub struct SimpleSock {
 
     addr: net::SocketAddr,
 
+    /// Protocol's signature
+    signature: &'static str,
+
     /// The receive buffer
     recv_buffer: Box<[u8]>,
 
     send_buffer: Box<[u8]>,
+
+    mtu: usize
 }
 
 impl SimpleSock {
     pub fn new_ex(
         addr: net::SocketAddr,
-        capacity: usize,
+        mtu: usize,
         settings: SockSettings,
     ) -> io::Result<Self> {
+
         let domain = if addr.is_ipv4() {
             sock::Domain::IPV4
         } else {
@@ -156,11 +157,20 @@ impl SimpleSock {
             .as_socket()
             .unwrap();
 
+        // Get our protocol signature
+        let signature = *PROTOCOL_SIGNATURE;
+
+        // Our buffers will be *slightly* larger to accomodate for the signature. The signature however isn't send, 
+        // it's only used for CRC checks
+        let buffer_capacity = mtu + signature.bytes().len();
+
         Ok(Self {
             socket,
             addr,
-            recv_buffer: vec![0u8; capacity].into_boxed_slice(),
-            send_buffer: vec![0u8; capacity].into_boxed_slice(),
+            signature,
+            mtu,
+            recv_buffer: vec![0u8; buffer_capacity].into_boxed_slice(),
+            send_buffer: vec![0u8; buffer_capacity].into_boxed_slice(),
         })
     }
 
@@ -176,16 +186,20 @@ impl SimpleSock {
             return Ok(());
         }
 
-        if data.len() > self.send_buffer.len()+4 {
-            return Err(io::Error::other("Reached socket's send capacity limits"));
+        if data.len() > self.mtu-4 {
+            return Err(io::Error::other("Reached socket's MTU limits"));
         }
 
         // Copy the message to our buffer
         let mut data_len = data.len();
         self.send_buffer[..data_len].copy_from_slice(data);
 
+        // Add our virtual signature
+        let data_signature_len = data_len+self.signature.len();
+        self.send_buffer[data_len..data_signature_len].copy_from_slice(self.signature.as_bytes());
+
         // Compute the CRC signature
-        let crc_bytes = crc32(&self.send_buffer[..data_len]).to_be_bytes();
+        let crc_bytes = crc32(&self.send_buffer[..data_signature_len]).to_be_bytes();
 
         // Add it to the end of the message
         self.send_buffer[data_len..data_len+crc_bytes.len()].copy_from_slice(&crc_bytes);
@@ -231,15 +245,32 @@ impl SimpleSock {
                     buff[0..read].reverse();
                 }
 
-                // Let's compute the CRC signature from our
-                let crc = crc32(&self.recv_buffer[..read - CRC32_SIG_LEN]);
-                let crc_bytes: [u8; CRC32_SIG_LEN] = crc.to_be_bytes();
+                // Compute the actual size of our data (excluding the CRC chechsum)
+                let data_len = read-CRC32_SIG_LEN;
 
-                if self.recv_buffer[read - CRC32_SIG_LEN..read] != crc_bytes {
-                    return None;
+                // Compute the length of data + signature
+                let data_signature_len = data_len + self.signature.bytes().len();
+
+                // Extract the CRC bytes from the packet (we're going to overwrite it with our signature)
+                let received_crc = {
+                    let mut crc = [0u8; 4];
+                    crc.copy_from_slice(&self.recv_buffer[data_len..read]);
+
+                    u32::from_be_bytes(crc)
+                };
+
+                // Write our signature there
+                self.recv_buffer[data_len..data_signature_len].copy_from_slice(self.signature.as_bytes());
+                
+                // Let's compute the CRC signature from the received packet
+                let actual_crc = crc32(&self.recv_buffer[..data_signature_len]);
+
+                // Only return when signatures match
+                if received_crc == actual_crc {
+                    Some((&self.recv_buffer[..data_len], addr.as_socket()?))
+                } else {
+                    None
                 }
-
-                Some((&self.recv_buffer[..read - CRC32_SIG_LEN], addr.as_socket()?))
             }
             Err(_) => None,
         }
