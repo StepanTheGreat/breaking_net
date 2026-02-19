@@ -7,7 +7,7 @@ mod channels;
 mod connection;
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, PROTOCOL_SIGNATURE, crc32::{CRC32_SIG_LEN, crc32}, packet::{PacketCrate, PacketCrateBuilder, Reliability, UserPacket}
+    MTU_SIZE, MTU_SIZE_PRIVATE, PROTOCOL_SIGNATURE, crc32::{CRC32_SIG_LEN, crc32, crc32_sign, crc32_verify}, packet::{PacketCrate, PacketCrateBuilder, Reliability, UserPacket}
 };
 
 use connection::SocketConnection;
@@ -186,26 +186,23 @@ impl SimpleSock {
             return Ok(());
         }
 
-        if data.len() > self.mtu-4 {
+        if data.len() > self.mtu-CRC32_SIG_LEN {
             return Err(io::Error::other("Reached socket's MTU limits"));
         }
 
+        // TODO: The socket shouldn't be responsible for verifying data integrity. It should be the responsibility of the layer
+        // TODO: above. A socket is just a dumb primitive for sending/receiving data (and simulating network environment)
+        let data_len = data.len();        
+        let data_crc_len = data_len+CRC32_SIG_LEN;
+
         // Copy the message to our buffer
-        let mut data_len = data.len();
         self.send_buffer[..data_len].copy_from_slice(data);
 
-        // Add our virtual signature
-        let data_signature_len = data_len+self.signature.len();
-        self.send_buffer[data_len..data_signature_len].copy_from_slice(self.signature.as_bytes());
+        // Sign it
+        crc32_sign(&mut self.send_buffer[..data_crc_len], Some(self.signature));
 
-        // Compute the CRC signature
-        let crc_bytes = crc32(&self.send_buffer[..data_signature_len]).to_be_bytes();
-
-        // Add it to the end of the message
-        self.send_buffer[data_len..data_len+crc_bytes.len()].copy_from_slice(&crc_bytes);
-        data_len += crc_bytes.len();
-
-        let data = &self.send_buffer[..data_len];
+        // Augment our data slice to account for our new signature
+        let data = &self.send_buffer[..data_crc_len];
 
         match self.socket.send_to(data, &to.into()) {
             Ok(written) if written == data.len() => Ok(()),
@@ -245,28 +242,11 @@ impl SimpleSock {
                     buff[0..read].reverse();
                 }
 
-                // Compute the actual size of our data (excluding the CRC chechsum)
+                let crc_valid = crc32_verify(&self.recv_buffer[..read], Some(self.signature));
                 let data_len = read-CRC32_SIG_LEN;
 
-                // Compute the length of data + signature
-                let data_signature_len = data_len + self.signature.bytes().len();
-
-                // Extract the CRC bytes from the packet (we're going to overwrite it with our signature)
-                let received_crc = {
-                    let mut crc = [0u8; 4];
-                    crc.copy_from_slice(&self.recv_buffer[data_len..read]);
-
-                    u32::from_be_bytes(crc)
-                };
-
-                // Write our signature there
-                self.recv_buffer[data_len..data_signature_len].copy_from_slice(self.signature.as_bytes());
-                
-                // Let's compute the CRC signature from the received packet
-                let actual_crc = crc32(&self.recv_buffer[..data_signature_len]);
-
                 // Only return when signatures match
-                if received_crc == actual_crc {
+                if crc_valid {
                     Some((&self.recv_buffer[..data_len], addr.as_socket()?))
                 } else {
                     None

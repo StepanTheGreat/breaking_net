@@ -240,19 +240,18 @@ fn test_continuous_reliable_dialogue() {
     set_packet_reorder_chance(1.0);
     set_packed_dublication_chance(1.0);
 
+    const MESSAGE_LEN: usize = 220;
     const MESSAGES: u8 = 20;
-    const MAX_MESSAGES: u8 = 4;
+    const MESSAGES_PER_ITER: u8 = 4;
 
     // For this amount of messages
     let mut messages = MESSAGES;
 
     while messages > 0 {
 
-        // We're going to send an arbitrary amount of messages per "frame"
-        let times = rand::random_range(0..messages.min(MAX_MESSAGES))+1;
-
-        for _ in 0..times {
-            let msg = [messages; 220]; 
+        // Send multiple messages per single iteration
+        for _ in 0..MESSAGES_PER_ITER {
+            let msg = [messages; MESSAGE_LEN]; 
 
             sock_a.send_to(&sock_b.addr(), &msg, Reliability::Reliable);
             sock_b.send_to(&sock_a.addr(), &msg, Reliability::Reliable);

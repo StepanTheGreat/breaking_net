@@ -8,9 +8,6 @@ use bitcode::{Decode, Encode};
 /// An ID of a packet (present on reliable and unreliable-ordered channels)
 pub type PacketSeqId = u32;
 
-/// The checksum of the packet present everywhere (allows verirying if a packet isn't corrupted)
-pub type PacketChecksum = [u8; 4];
-
 /// The packet data itself
 pub type PacketPayload = Rc<Vec<u8>>;
 
