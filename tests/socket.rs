@@ -31,32 +31,32 @@ fn test_basic_sockets() {
     // Poll our sockets 2 times (due to ordering reasons)
     poll_socks!(2, DT, [sock_a, sock_b]);
 
-    // Both of them should have packets available
-    assert!(sock_a.has_packets());
-    assert!(sock_b.has_packets());
+    // Both of them should have messages available
+    assert!(sock_a.has_messages());
+    assert!(sock_b.has_messages());
 
     // Ensure that our data is correct
     for msg in msgs {
         // Receive from socket A (with B as the sender)
         {
-            let packet = sock_a.recv_from().unwrap();
-            assert_eq!(packet.sender, sock_b.addr());
-            assert_eq!(packet.data, msg);
-            assert_eq!(packet.reliability, rel);
+            let message = sock_a.recv_from().unwrap();
+            assert_eq!(message.sender, sock_b.addr());
+            assert_eq!(message.data, msg);
+            assert_eq!(message.reliability, rel);
         }
 
         // Receive from socket B (with A as the sender)
         {
-            let packet = sock_b.recv_from().unwrap();
-            assert_eq!(packet.sender, sock_a.addr());
-            assert_eq!(packet.data, msg);
-            assert_eq!(packet.reliability, rel);
+            let message = sock_b.recv_from().unwrap();
+            assert_eq!(message.sender, sock_a.addr());
+            assert_eq!(message.data, msg);
+            assert_eq!(message.reliability, rel);
         }
     }
 
-    // Make sure that none of them has any other packets to discover
-    assert!(!sock_b.has_packets());
-    assert!(!sock_a.has_packets());
+    // Make sure that none of them has any other messages to discover
+    assert!(!sock_b.has_messages());
+    assert!(!sock_a.has_messages());
 }
 
 #[test]
@@ -83,9 +83,9 @@ fn test_mtu_limits() {
     assert_eq!(sock_a.recv_from().unwrap().data, message);
     assert_eq!(sock_b.recv_from().unwrap().data, message);
 
-    // Make sure that none of them has any other packets to discover
-    assert!(!sock_b.has_packets());
-    assert!(!sock_a.has_packets());
+    // Make sure that none of them has any other messages to discover
+    assert!(!sock_b.has_messages());
+    assert!(!sock_a.has_messages());
 }
 
 
@@ -96,7 +96,7 @@ fn test_corruption_detection() {
     let mut sock_a = Socket::new(ADDR_A).unwrap();
     let mut sock_b = Socket::new(ADDR_B).unwrap();
 
-    let msg = b"Hello";
+    let msg = b"Hi";
     let rel = Reliability::Unreliable;
 
     // Send our message
@@ -105,11 +105,11 @@ fn test_corruption_detection() {
     // Poll our sockets
     poll_socks!(DT, [sock_a, sock_b]);
 
-    // Ensure that our socket receives that packet
+    // Ensure that our socket receives that message
     assert!(sock_b.recv_from().is_some());
 
     // Guarantee corruption
-    set_packed_corruption_chance(1.0);
+    set_message_corruption_chance(1.0);
 
     // Send our message
     sock_a.send_to(&sock_b.addr(), msg, rel);
@@ -117,12 +117,12 @@ fn test_corruption_detection() {
     // Poll our sockets
     poll_socks!(DT, [sock_a, sock_b]);
 
-    // Ensure that our socket DOESN'T receive that packet
+    // Ensure that our socket DOESN'T receive that message
     assert!(sock_b.recv_from().is_none());
 }
 
 #[test]
-fn test_reliable_packets() {
+fn test_reliable_messages() {
     reset_stress_environment();
 
     let mut sock_a = Socket::new(ADDR_A).unwrap();
@@ -131,8 +131,8 @@ fn test_reliable_packets() {
     let msg = b"Hello";
     let rel = Reliability::Reliable;
 
-    // Guarantee packet loss
-    set_packet_loss_chance(1.0);
+    // Guarantee message loss
+    set_message_loss_chance(1.0);
 
     // Connect them
     sock_a.connect(sock_b.addr());
@@ -143,23 +143,23 @@ fn test_reliable_packets() {
 
     // It will fail no matter how many times we're going to resend it
     poll_socks!(10, DT, [sock_a, sock_b]);
-    assert!(!sock_b.has_packets());
+    assert!(!sock_b.has_messages());
 
-    // Drop our packet loss
-    set_packet_loss_chance(0.0);
+    // Drop our message loss
+    set_message_loss_chance(0.0);
 
     // Poll 10 times
     poll_socks!(10, DT, [sock_a, sock_b]);
 
-    // Ensure that our socket receives the packet
+    // Ensure that our socket receives the message
     assert!(sock_b.recv_from().is_some());
 
     // Receive it only once
-    assert!(!sock_b.has_packets());
+    assert!(!sock_b.has_messages());
 }
 
 #[test]
-fn test_deduplication_packets() {
+fn test_deduplication_messages() {
     reset_stress_environment();
 
     let mut sock_a = Socket::new(ADDR_A).unwrap();
@@ -167,10 +167,10 @@ fn test_deduplication_packets() {
 
     let msg = b"Hello";
 
-    // Guarantee packet loss
-    set_packed_dublication_chance(1.0);
+    // Guarantee message loss
+    set_message_dublication_chance(1.0);
 
-    // First we're going to connect them together, since packets without a connection never get "filtered"
+    // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
     sock_a.connect(sock_b.addr());
 
@@ -180,15 +180,15 @@ fn test_deduplication_packets() {
     // Poll 10 times
     poll_socks!(10, DT, [sock_a, sock_b]);
 
-    // Ensure that our socket receives the packet
+    // Ensure that our socket receives the message
     assert!(sock_b.recv_from().is_some());
 
     // Receive it only once
-    assert!(!sock_b.has_packets());
+    assert!(!sock_b.has_messages());
 }
 
 #[test]
-fn test_reordering_packets() {
+fn test_reordering_messages() {
     reset_stress_environment();
 
     let mut sock_a = Socket::new(ADDR_A).unwrap();
@@ -197,10 +197,10 @@ fn test_reordering_packets() {
     let msgs: &[&[u8]] = &[b"Hello", b" ", b"World", b"!"];
 
     // Let's throw some horrible numbers there
-    set_packet_reorder_chance(1.0);
-    set_packed_dublication_chance(1.0);
+    set_message_reorder_chance(1.0);
+    set_message_dublication_chance(1.0);
 
-    // First we're going to connect them together, since packets without a connection never get "filtered"
+    // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
     sock_a.connect(sock_b.addr());
 
@@ -215,13 +215,13 @@ fn test_reordering_packets() {
     // Finally, for each message that we sent
     for msg in msgs {
         // Receive it and check for the contents
-        let packet = sock_b.recv_from().unwrap();
+        let message = sock_b.recv_from().unwrap();
 
-        assert!(&packet.data == msg);
+        assert!(&message.data == msg);
     }
 
     // Receive it only once
-    assert!(!sock_b.has_packets());
+    assert!(!sock_b.has_messages());
 }
 
 /// Test a continous message dialogue
@@ -237,8 +237,8 @@ fn test_continuous_reliable_dialogue() {
     sock_a.connect(sock_b.addr());
 
     // Let's throw some horrible numbers there
-    set_packet_reorder_chance(1.0);
-    set_packed_dublication_chance(1.0);
+    set_message_reorder_chance(1.0);
+    set_message_dublication_chance(1.0);
 
     const MESSAGE_LEN: usize = 220;
     const MESSAGES: u8 = 20;
@@ -265,7 +265,7 @@ fn test_continuous_reliable_dialogue() {
 
     // Now receive and check
     let mut messages = MESSAGES;
-    while sock_a.has_packets() || sock_b.has_packets() {
+    while sock_a.has_messages() || sock_b.has_messages() {
         poll_socks!(DT, [sock_a, sock_b, sock_a]);
 
         let pack_b = sock_a.recv_from().unwrap().data;
@@ -278,8 +278,8 @@ fn test_continuous_reliable_dialogue() {
         messages -= 1;
     }
 
-    assert!(!sock_a.has_packets());
-    assert!(!sock_b.has_packets());
+    assert!(!sock_a.has_messages());
+    assert!(!sock_b.has_messages());
 }
 
 
@@ -300,7 +300,7 @@ fn test_round_trip_time() {
 
     let msg = b"Test message";
     
-    // Send a packet to B
+    // Send a message to B
     sock_a.send_to(&sock_b.addr(), msg, Reliability::Reliable);
 
     // Poll our socket 3 times, without polling B (to simulate delay from B)
@@ -309,7 +309,7 @@ fn test_round_trip_time() {
     // Finally, actually poll both of them
     poll_socks!(DT, [sock_b, sock_a]);
 
-    // Receive the packet
+    // Receive the message
     sock_b.recv_from().unwrap();
 
     // The round trip time must be larger than 0 

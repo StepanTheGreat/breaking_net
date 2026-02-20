@@ -1,113 +1,113 @@
-//! We're using a component-based approach, where packets are constructed using different components. The primary idea is that packets can arrive with
-//! different data
-
 use std::rc::Rc;
-
 use bitcode::{Decode, Encode};
 
-/// An ID of a packet (present on reliable and unreliable-ordered channels)
+/// An ID of a packet
 pub type PacketSeqId = u32;
 
-/// The packet data itself
-pub type PacketPayload = Rc<Vec<u8>>;
+/// An ID of a uniquely identifiable message. The difference between the packet, is that a packet is only sent once. A message however, can be
+/// resent until it's actually received. This is an important separation when measuring RTT and other metrics.
+pub type MessageId = u32;
+
+/// The message data itself
+pub type MessagePayload = Rc<Vec<u8>>;
 
 pub type PacketAckMap = u32;
 
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reliability {
-    /// A packet is fully unreliable
+    /// A message is fully unreliable
     Unreliable,
 
-    /// Packets are resent, but they arrive in undefined order
+    /// Messages are resent, but they arrive in undefined order
     ReliableUnordered,
 
-    /// Packets arrive and get processed in the same order they were sent
+    /// Messages arrive and get processed in the same order they were sent
     Reliable,
 }
 
 #[derive(Clone, Encode, Decode)]
-pub enum UserPacketKind {
+pub enum UserMessageKind {
     Unreliable,
     ReliableUnordered {
-        seq_id: PacketSeqId
+        msg_id: MessageId
     },
     Reliable {
-        seq_id: PacketSeqId
+        msg_id: MessageId
     }
 }
 
 #[derive(Clone, Encode, Decode)]
-pub struct UserPacket {
-    kind: UserPacketKind,
-    payload: PacketPayload,
+pub struct UserMessage {
+    kind: UserMessageKind,
+    payload: MessagePayload,
 }
 
-impl UserPacket {
-    fn new(kind: UserPacketKind, payload: PacketPayload) -> Self {
+impl UserMessage {
+    fn new(kind: UserMessageKind, payload: MessagePayload) -> Self {
         Self {
             kind, 
             payload
         }
     }
 
-    pub fn new_reliable(seq_id: PacketSeqId, payload: PacketPayload) -> Self {
-        Self::new(UserPacketKind::Reliable { seq_id }, payload)
+    pub fn new_reliable(msg_id: MessageId, payload: MessagePayload) -> Self {
+        Self::new(UserMessageKind::Reliable { msg_id }, payload)
     }
 
-    pub fn new_reliable_unordered(seq_id: PacketSeqId, payload: PacketPayload) -> Self {
-        Self::new(UserPacketKind::ReliableUnordered { seq_id }, payload)
+    pub fn new_reliable_unordered(msg_id: MessageId, payload: MessagePayload) -> Self {
+        Self::new(UserMessageKind::ReliableUnordered { msg_id }, payload)
     }
 
-    pub fn new_unreliable(payload: PacketPayload) -> Self {
-        Self::new(UserPacketKind::Unreliable, payload)
+    pub fn new_unreliable(payload: MessagePayload) -> Self {
+        Self::new(UserMessageKind::Unreliable, payload)
     }
 
     pub fn is_reliable(&self) -> bool {
         match self.kind {
-            UserPacketKind::Reliable { .. } => true,
-            UserPacketKind::ReliableUnordered { .. } => true,
-            UserPacketKind::Unreliable => false,
+            UserMessageKind::Reliable { .. } => true,
+            UserMessageKind::ReliableUnordered { .. } => true,
+            UserMessageKind::Unreliable => false,
         }
     }
 
-    /// A conservative estimate of the total packet size
+    /// A conservative estimate of the total message size
     pub fn size(&self) -> usize {
         // The cost of the payload (length + data)
         let payload_size = size_of::<u32>() + self.payload.len();
 
-        // The cost of the sequence ID in reliable packets
+        // The cost of the sequence ID in reliable messages
         let seq_id_size = match self.kind {
-            UserPacketKind::ReliableUnordered { .. } => size_of::<PacketSeqId>(),
-            UserPacketKind::Reliable { .. } => size_of::<PacketSeqId>(),
-            UserPacketKind::Unreliable => 0
+            UserMessageKind::ReliableUnordered { .. } => size_of::<PacketSeqId>(),
+            UserMessageKind::Reliable { .. } => size_of::<PacketSeqId>(),
+            UserMessageKind::Unreliable => 0
         };
 
-        // The cost of the enum tag for our packet
+        // The cost of the enum tag for our message
         let tag_size = 1;
 
         tag_size + payload_size + seq_id_size
     }
 
-    /// Get a sequence id of this packet, if present
-    pub fn sequence_id(&self) -> Option<PacketSeqId> {
+    /// Get a message id from this message, if reliable
+    pub fn message_id(&self) -> Option<PacketSeqId> {
         match self.kind {
-            UserPacketKind::Reliable { seq_id, .. } => Some(seq_id),
-            UserPacketKind::ReliableUnordered { seq_id, .. } => Some(seq_id),
-            UserPacketKind::Unreliable => None,
+            UserMessageKind::Reliable { msg_id, .. } => Some(msg_id),
+            UserMessageKind::ReliableUnordered { msg_id, .. } => Some(msg_id),
+            UserMessageKind::Unreliable => None,
         }
     }
 
-    /// Get this packet's reliability value
+    /// Get this message's reliability value
     pub fn reliability(&self) -> Reliability {
         match self.kind {
-            UserPacketKind::Reliable { .. } => Reliability::Reliable,
-            UserPacketKind::ReliableUnordered { .. } => Reliability::ReliableUnordered,
-            UserPacketKind::Unreliable => Reliability::Unreliable,
+            UserMessageKind::Reliable { .. } => Reliability::Reliable,
+            UserMessageKind::ReliableUnordered { .. } => Reliability::ReliableUnordered,
+            UserMessageKind::Unreliable => Reliability::Unreliable,
         }
     }
 
-    /// Consume this packet's payload. This will return [None] if it still has active references
+    /// Consume this message's payload. This will return [None] if it still has active references
     pub fn consume_payload(self) -> Option<Vec<u8>> {
         Rc::into_inner(self.payload)
     }
@@ -117,15 +117,32 @@ impl UserPacket {
     }
 }
 
-/// A packet crate is essentially a single super packet which packs together multiple user packets and acknowledgments (to the same destination)
+/// The inherent serialisation type behind packet crate
+/// 
+/// It includes:
+/// - An acknowledgment base
+/// - An acknowledgment map
+/// - A list of messages
+#[derive(Encode, Decode)]
+pub struct PacketCrate {
+    pub seq_id: PacketSeqId,
+    pub ack_base: PacketSeqId,
+    pub ack_map: PacketAckMap,
+    pub messages: Vec<UserMessage>
+}
+
+/// A packet crate is essentially a single super packet which packs together multiple user messages and acknowledgments (to the same destination)
 ///
-/// Its main purpose is to batch packets into larger packets (when possible)
+/// Its main purpose is to batch messages into larger packets (when possible)
 pub struct PacketCrateBuilder {
     /// Acknowledgments to pack. Why are we using an option here? To safely work around the borrowchecker
     acknowledgments: Option<(PacketSeqId, PacketAckMap)>,
 
-    /// User packets to pack
-    user_packets: Option<Vec<UserPacket>>,
+    /// User messages to pack
+    user_messages: Option<Vec<UserMessage>>,
+
+    /// The ID of a packet
+    packet_seq_id: Option<PacketSeqId>,
 
     serbuffer: bitcode::Buffer,
 
@@ -136,25 +153,19 @@ pub struct PacketCrateBuilder {
     mtu: usize,
 }
 
-/// The inherent serialisation type behind packet crate
-/// 
-/// It includes:
-/// - An acknowledgment base
-/// - An acknowledgment map
-/// - A list of packets
-pub type PacketCrate = (PacketSeqId, PacketAckMap, Vec<UserPacket>);
-
 impl PacketCrateBuilder {
     /// The initial size of the packet crate:
+    /// - Packet ID
     /// - Base acknowledgment ID (4)
     /// - Acknowledgment map (4)
-    /// - Length of user packets (4)
-    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<PacketAckMap>() + size_of::<u32>();
+    /// - Length of user messages (4)
+    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<PacketSeqId>() + size_of::<PacketAckMap>() + size_of::<u32>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
             acknowledgments: None,
-            user_packets: Some(Vec::new()),
+            packet_seq_id: None,
+            user_messages: Some(Vec::new()),
 
             serbuffer: bitcode::Buffer::new(),
 
@@ -173,15 +184,19 @@ impl PacketCrateBuilder {
         self.mtu - self.size
     }
 
+    pub fn set_packet_id(&mut self, seq_id: PacketSeqId) {
+        self.packet_seq_id = Some(seq_id);
+    }
+
     pub fn put_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
         self.acknowledgments = Some((base, map));
     }
 
-    pub fn put_user_packet(&mut self, packet: UserPacket) {
+    pub fn put_user_message(&mut self, packet: UserMessage) {
         let size = packet.size();
         assert!(self.can_fit(size));
 
-        self.user_packets.as_mut().unwrap().push(packet);
+        self.user_messages.as_mut().unwrap().push(packet);
         self.size += size;
     }
 
@@ -193,14 +208,15 @@ impl PacketCrateBuilder {
     /// Clear this packet crate for reusability
     pub fn clear(&mut self) {
         self.acknowledgments = None;
-        self.user_packets.as_mut().unwrap().clear();
+        self.packet_seq_id = None;
+        self.user_messages.as_mut().unwrap().clear();
 
         self.size = Self::INIT_SIZE;
     }
 
-    /// A packet crate packer is empty if it doesn't contain any acknowledgments or user packets
+    /// A packet crate packer is empty if it doesn't contain any acknowledgments or user messages
     pub fn is_empty(&self) -> bool {
-        self.acknowledgments.is_none() && self.user_packets.as_ref().unwrap().is_empty()
+        self.acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
     }
 
     /// Build this crate and get the slice of the serialized crate packet
@@ -208,26 +224,30 @@ impl PacketCrateBuilder {
         // First of all, create our packet crate
 
         let (ack_base, ack_map) = self.acknowledgments.unwrap_or((0, 0));
-        let pcrate: PacketCrate = (
+        let seq_id = self.packet_seq_id.expect("No packet ID was supplied");
+
+        let pcrate = PacketCrate {
+            seq_id,
             ack_base,
             ack_map,
-            self.user_packets.take().unwrap(),
-        );
+            messages: self.user_messages.take().unwrap(),
+        };
 
         // Serialize it into bytes
         let serialized = self.serbuffer.encode(&pcrate);
 
         {
-            // Now, clear and put back our user packet vector
-            let (_, _, mut user_packets) = pcrate;
+            // Now, clear and put back our user message vector
+            let mut user_messages = pcrate.messages;
 
-            user_packets.clear();
-            self.user_packets = Some(user_packets);
+            user_messages.clear();
+            self.user_messages = Some(user_messages);
         }
 
         // Reset the size of our builder
         self.size = Self::INIT_SIZE;
         self.acknowledgments = None;
+        self.packet_seq_id = None;
 
         // Return the serialized slice
         serialized

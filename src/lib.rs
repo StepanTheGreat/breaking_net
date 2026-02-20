@@ -19,8 +19,8 @@ pub(crate) use utils::*;
 
 #[cfg(feature = "stress_testing")]
 pub use socket::{
-    reset_stress_environment, set_packed_corruption_chance, set_packed_dublication_chance,
-    set_packet_loss_chance, set_packet_reorder_chance,
+    reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,
+    set_message_loss_chance, set_message_reorder_chance,
 };
 
 /// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
@@ -28,7 +28,7 @@ pub use socket::{
 /// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely
 pub(crate) const MTU_SIZE_PRIVATE: usize = 1200;
 
-/// The maximum transport unit for our packets. I'm using a much lower number here to avoid
+/// The maximum transport unit for our messages. I'm using a much lower number here to avoid
 /// fragmentation on most networks, though usually you're supposed to query it directly from
 /// a network interface.
 pub const MTU_SIZE: usize = MTU_SIZE_PRIVATE-50;
@@ -92,14 +92,14 @@ impl BroadcastListener {
         Ok(Self { socket })
     }
 
-    /// Check if this listener has any packets without consuming them from the queue
-    pub fn has_packets(&self) -> bool {
-        self.socket.has_packets()
+    /// Check if this listener has any messages without consuming them from the queue
+    pub fn has_messages(&self) -> bool {
+        self.socket.has_messages()
     }
 
-    /// Receive a single packet from the network.
+    /// Receive a single message from the network.
     ///
-    /// [None] means there are no packets
+    /// [None] means there are no messages
     pub fn recv(&mut self) -> Option<(Vec<u8>, net::SocketAddr)> {
         self.socket
             .recv_from()
@@ -118,7 +118,7 @@ pub struct BroadcastWriter {
 
 impl BroadcastWriter {
     pub fn new(socket_addr: net::SocketAddr, port: u16) -> io::Result<Self> {
-        // The address to which we're going to send packets
+        // The address to which we're going to send messages
         let broadcast_addr = socket_addr!(broadcast;port);
 
         // The capacity is at zero, since we're not going to receive anything

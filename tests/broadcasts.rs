@@ -21,9 +21,9 @@ fn test_broadcasts() {
     let mut listener2 = make_listener();
     let mut writer = make_writer();
 
-    // No packets as of now
-    assert!(!listener1.has_packets());
-    assert!(!listener2.has_packets());
+    // No messages as of now
+    assert!(!listener1.has_messages());
+    assert!(!listener2.has_messages());
 
     let data = [1, 2, 3, 4];
 
@@ -31,11 +31,11 @@ fn test_broadcasts() {
     writer.send(&data).unwrap();
 
     // Packets should be available now
-    assert!(listener1.has_packets());
-    assert!(listener2.has_packets());
+    assert!(listener1.has_messages());
+    assert!(listener2.has_messages());
 
     {
-        // Receive the packets
+        // Receive the messages
         let (msg1, addr1) = listener1.recv().unwrap();
         let (msg2, addr2) = listener2.recv().unwrap();
 
@@ -45,7 +45,7 @@ fn test_broadcasts() {
         assert_eq!(&msg1, &data); // The message perfectly matches what was sent
     }
 
-    // They should no longer have any packets
-    assert!(!listener1.has_packets());
-    assert!(!listener2.has_packets());
+    // They should no longer have any messages
+    assert!(!listener1.has_messages());
+    assert!(!listener2.has_messages());
 }
