@@ -1,6 +1,8 @@
 use std::rc::Rc;
 use bitcode::{Decode, Encode};
 
+use crate::window::SlidingAckWindow;
+
 /// An ID of a packet
 pub type PacketSeqId = u32;
 
@@ -12,6 +14,8 @@ pub type MessageId = u32;
 pub type MessagePayload = Rc<Vec<u8>>;
 
 pub type PacketAckMap = u32;
+
+pub type MessageAckMap = u32;
 
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,16 +122,18 @@ impl UserMessage {
 }
 
 /// The inherent serialisation type behind packet crate
-/// 
-/// It includes:
-/// - An acknowledgment base
-/// - An acknowledgment map
-/// - A list of messages
 #[derive(Encode, Decode)]
 pub struct PacketCrate {
+    /// The sequence ID of this packet
     pub seq_id: PacketSeqId,
-    pub ack_base: PacketSeqId,
-    pub ack_map: PacketAckMap,
+
+    /// The base of the message window
+    pub msg_base: MessageId,
+    
+    /// The bitmap of the message window
+    pub msg_map: MessageAckMap,
+
+    /// A container of messages grouped under a single packet
     pub messages: Vec<UserMessage>
 }
 
@@ -260,32 +266,25 @@ impl PacketCrateBuilder {
 /// It will return the base sequence ID from which to acknowledge packets and the map itself. 
 /// 
 /// This will not include base sequence ID into the map
-pub fn build_ack_map(acks: &[PacketSeqId]) -> (PacketSeqId, PacketAckMap) {
-    assert!(acks.is_sorted());
-
-    // The accepted default
-    if acks.is_empty() {
-        return (0, 0)
-    }
+pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
+    let base = window.window_position();
     
     // Initialise the map
     let mut map = 0;
 
-    // Get the base
-    let base = acks[0];
+    // The read cursor
+    let mut cursor = (PacketAckMap::BITS-1) << 1;
 
-    for ack in acks.iter().copied() {
+    // For each bit
+    for i in 0..PacketAckMap::BITS {
         
-        // Compute the delta (binary index)
-        let bind = ack-base;
-
-        // We'll stop here
-        if bind >= PacketAckMap::BITS {
-            break;
+        // If it's marked - put it on the map as well
+        if !window.is_marked(base+i) {
+            map |= cursor;
         }
 
-        // Finally, insert it into the map
-        map |= 1 << ((PacketAckMap::BITS-1)-bind);
+        // Shift the cursor to the right
+        cursor >>= 1;
     } 
 
     (base, map)

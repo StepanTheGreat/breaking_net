@@ -1,6 +1,7 @@
 use crate::packet::PacketSeqId;
 
-type BitPage = u64;
+/// A page used for storing bits in a bitset
+pub type BitPage = u64;
 
 /// The amount of bits in our bit page
 const PAGE_BITS: usize = BitPage::BITS as _;

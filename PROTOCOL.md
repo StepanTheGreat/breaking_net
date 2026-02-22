@@ -64,3 +64,38 @@ A socket is simply an abstraction over a UDP socket that has a few differences:
    After we're done with packets - we're going to try fit acknowledgments. Absolutely the same way.
 
    Note that we always first prioritize packets, and only THEN acknowledgments. It's absolutely possible for us to never send any acknowledgments at all, if the remaining packet size is always less than our size of an acknowledgment (though theoretically we should be able to send at least 2 per packet, thanks to our private MTU size increase). 
+4. Acknowledgment
+   This protocol uses a lot of ideas from QUIC. Notably: packets and messages are 2 distinct concepts. A message is a uniquely identifiable information, while
+   a packet is a unit of transport. Mulitple messages can be transported using a single packet. For this purpose, packets and messages have both uniquely
+   identifiable IDs. There are multiple reasons why this is useful, one of which - it simplifies RTT measurement, since every single packet is ONLY received once.
+   
+   For this reason, the overall mechanism is as following:
+
+   Socket A and socket B have a connection.
+
+   Socket A would like to send a message to a socket B. To do so, socket A will :
+   1. generate a new message ID (ID = 0);
+   2. add the message into the reliable message queue (where it will be resent until received)
+   3. generate a new packet ID (ID = 0);
+   4. Add the message ID (0) into the packet window, under the ID of the packet (0);
+      This window will allow us to know if a packet was received, and if so - which associated with it messages were received.
+      The window moves ONLY when the lowest packet was acknowledged.
+
+   After this, socket A will be waiting for an acknowledgment from the socket B. Because the message has also a timer - it will be retransmitted with
+   other packets as well (for example packet ID 1). 
+
+   After a while, socket B receives our packet (0).
+   Because the message(0) associated with it was not yet received (by checking its message window), socket B is going to both process and acknowledge 
+   its underlying packet.
+
+   Acknowledgment works by sending the lowest bitmap of the packet window.
+   A packet window consists of a base (the position of the bitmap) and the map itself (where each bit corresponds to a received packet). The position is
+   included within the bitmap.   
+   What we simply must do, is mark that packet as acknowledged and send this bitmap over to socket A.
+
+   By default, even when there are no packets to send, if there are acknowledgments to send - we're going to dispatch a packet anyway to socket A.
+   Note that because this is also a packet, it contains its own ID, which essentially repeats the procedure we did at the start.
+
+   When socket A receives this packet, it will analyze the acknowledgment map. There, it will find our packet 0. Well, which messages did packet 0 contain?
+   By looking at the packet window (if it's not yet TOO outdated) - we can easily find which messages it transfered. Using this we can immediately mark
+   our message as received and remove it from the queue.
