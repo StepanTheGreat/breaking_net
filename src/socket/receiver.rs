@@ -1,4 +1,4 @@
-use crate::{socket::channels::ChannelStorage, window::SlidingAckWindow};
+use crate::{packet::{MessageId, UserMessage}, socket::channels::{Channel, ChannelStorage}, window::SlidingAckWindow};
 
 pub struct ReceiveManager {
     /// The channels processing received packets
@@ -33,7 +33,32 @@ impl ReceiveManager {
         }
     }
 
-    pub fn process_packet(&mut self) {
-        todo!()
+    /// Mark the provided message ID as received
+    pub fn mark_sent_message_received(&mut self, msg_id: MessageId) {
+        self.send_message_window.mark(msg_id);
+    }
+
+    /// Process the provided user message
+    pub fn process_message(&mut self, message: UserMessage) {
+        match message.message_id() {
+            Some(packet_id) => {
+                if self.recv_message_window.within_bounds(packet_id) && !self.recv_message_window.is_marked(packet_id) {
+                    self.channels.process_message(&self.recv_message_window, message);
+
+                    self.recv_message_window.mark(packet_id);
+                }
+            }
+            None => self.channels.process_message(&self.recv_message_window, message)
+        }
+    }
+
+    /// Get the window of messages that we were able to receive
+    pub fn received_messages(&self) -> &SlidingAckWindow {
+        &self.recv_message_window
+    }
+
+    /// Try receive a message from all our channels
+    pub fn recv_message(&mut self) -> Option<UserMessage> {
+        self.channels.recv_message(&self.recv_message_window)
     }
 }

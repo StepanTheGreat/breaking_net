@@ -11,7 +11,6 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [x] Packet batching
 - [x] Better acknowledgments (using bitmaps)
 - [x] Protocol versioning
-- [ ] QUIC-like acknowledgment 
 - [ ] Fixed tickrate
 - [ ] Heartbeat management
 - [ ] Socket events (instead of simply packets)
@@ -20,6 +19,7 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [ ] Basic DoS prevention
 - [ ] Encryption + Hanshake (probably using `snow`) 
 - [ ] Socket customization (custom PPS, MTU limits, ...)
+- [ ] QUIC-like acknowledgment 
 - [ ] C ABI 
 
 ## Testing

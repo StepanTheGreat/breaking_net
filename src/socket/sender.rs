@@ -205,7 +205,7 @@ impl SendManager {
         &mut self, 
         socket: &mut SimpleSock, 
         crate_builder: &mut PacketCrateBuilder, 
-        recv_packet_window: &SlidingAckWindow,
+        recv_message_window: &SlidingAckWindow,
         dt: f32
     ) {
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
@@ -219,8 +219,8 @@ impl SendManager {
             // No matter the delta here, we're not going to send more than our PPS in a single second
         ) as usize;
 
-        // Build our acknowledgment map
-        let (ack_base, ack_map) = build_ack_map(recv_packet_window);
+        // Build our acknowledgment map for receiver's messages
+        let (ack_base, ack_map) = build_ack_map(recv_message_window);
 
         // While we have some available message slots
         while available_packets > 0 {
@@ -230,7 +230,7 @@ impl SendManager {
             }
 
             // Put our acknowledgments
-            crate_builder.put_acknowledgments(ack_base, ack_map);
+            crate_builder.put_message_acknowledgments(ack_base, ack_map);
 
             // Get a new packet ID
             crate_builder.set_packet_id(self.packet_counter.next());

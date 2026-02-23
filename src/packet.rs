@@ -142,7 +142,7 @@ pub struct PacketCrate {
 /// Its main purpose is to batch messages into larger packets (when possible)
 pub struct PacketCrateBuilder {
     /// Acknowledgments to pack. Why are we using an option here? To safely work around the borrowchecker
-    acknowledgments: Option<(PacketSeqId, PacketAckMap)>,
+    msg_acknowledgments: Option<(MessageId, MessageAckMap)>,
 
     /// User messages to pack
     user_messages: Option<Vec<UserMessage>>,
@@ -165,11 +165,11 @@ impl PacketCrateBuilder {
     /// - Base acknowledgment ID (4)
     /// - Acknowledgment map (4)
     /// - Length of user messages (4)
-    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<PacketSeqId>() + size_of::<PacketAckMap>() + size_of::<u32>();
+    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<MessageId>() + size_of::<MessageAckMap>() + size_of::<u32>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
-            acknowledgments: None,
+            msg_acknowledgments: None,
             packet_seq_id: None,
             user_messages: Some(Vec::new()),
 
@@ -194,8 +194,8 @@ impl PacketCrateBuilder {
         self.packet_seq_id = Some(seq_id);
     }
 
-    pub fn put_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
-        self.acknowledgments = Some((base, map));
+    pub fn put_message_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
+        self.msg_acknowledgments = Some((base, map));
     }
 
     pub fn put_user_message(&mut self, packet: UserMessage) {
@@ -213,7 +213,7 @@ impl PacketCrateBuilder {
 
     /// Clear this packet crate for reusability
     pub fn clear(&mut self) {
-        self.acknowledgments = None;
+        self.msg_acknowledgments = None;
         self.packet_seq_id = None;
         self.user_messages.as_mut().unwrap().clear();
 
@@ -222,20 +222,20 @@ impl PacketCrateBuilder {
 
     /// A packet crate packer is empty if it doesn't contain any acknowledgments or user messages
     pub fn is_empty(&self) -> bool {
-        self.acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
+        self.msg_acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
     }
 
     /// Build this crate and get the slice of the serialized crate packet
     pub fn build(&mut self) -> &[u8] {
         // First of all, create our packet crate
 
-        let (ack_base, ack_map) = self.acknowledgments.unwrap_or((0, 0));
+        let (msg_base, msg_map) = self.msg_acknowledgments.unwrap_or((0, 0));
         let seq_id = self.packet_seq_id.expect("No packet ID was supplied");
 
         let pcrate = PacketCrate {
             seq_id,
-            ack_base,
-            ack_map,
+            msg_base,
+            msg_map,
             messages: self.user_messages.take().unwrap(),
         };
 
@@ -252,7 +252,7 @@ impl PacketCrateBuilder {
 
         // Reset the size of our builder
         self.size = Self::INIT_SIZE;
-        self.acknowledgments = None;
+        self.msg_acknowledgments = None;
         self.packet_seq_id = None;
 
         // Return the serialized slice

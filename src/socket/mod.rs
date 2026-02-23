@@ -8,6 +8,7 @@ mod connection;
 
 mod sender;
 mod receiver;
+mod stats;
 
 pub use ssock::{SimpleSock, SockSettings};
 #[cfg(feature = "stress_testing")]
@@ -78,7 +79,7 @@ impl Socket {
         let connection = self.connections.entry(*to)
             .or_insert(SocketConnection::new(*to));
 
-        connection.queue_message(how, data.to_owned());
+        connection.queue_message( data.to_owned(), how);
     }
 
     /// Receive and distribute (to connections) messages
@@ -101,7 +102,7 @@ impl Socket {
 
             // If this is a message from a known connection - let it mark all the acknowledgments it needs
             if let Some(conn) = connection.as_mut() {
-                conn.my_packet_acknowledgments_received(pcrate.ack_base, pcrate.ack_map);
+                conn.sent_message_acknowledgments_received(pcrate.msg_base, pcrate.msg_map);
             }
 
             // Now we're going to iterate every single message
@@ -109,12 +110,7 @@ impl Socket {
 
                 // If we have a connection and our message contains a message ID - we're going to notify our connection about it
                 if let Some(conn) = connection.as_mut() {
-                    // If this message has a sequence ID - acknowledge it
-                    if let Some(seqid) = message.message_id() {
-                        conn.other_packet_acknowledgment_received(seqid);
-                    }
-
-                    // And finally - process it (filter, reorder it and so on)
+                    // Process it (filter, reorder it and so on)
                     conn.process_message(message);
                 } else {
                     // In any other case we're just going to buffer it without a connection
@@ -180,17 +176,5 @@ impl Socket {
     /// How many messages are available
     pub fn messages(&self) -> usize {
         self.recv_buffer.len()
-    }
-
-    /// Get round trip time statistics (measured in seconds) for the provided address (if a connection exists)
-    pub fn round_trip_time(&self, addr: net::SocketAddr) -> Option<f32> {
-        self.connections.get(&addr)
-            .map(|connection| connection.round_trip_time())
-    }
-
-    /// Get the average packet loss (betweeen 0 and 1) for the provided address (if a connection exists)
-    pub fn packet_loss(&self, addr: net::SocketAddr) -> Option<f32> {
-        self.connections.get(&addr)
-            .map(|connection| connection.packet_loss())
     }
 }
