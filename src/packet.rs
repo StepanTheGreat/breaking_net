@@ -1,5 +1,5 @@
-use std::rc::Rc;
 use bitcode::{Decode, Encode};
+use std::rc::Rc;
 
 use crate::window::SlidingAckWindow;
 
@@ -33,12 +33,8 @@ pub enum Reliability {
 #[derive(Clone, Encode, Decode)]
 pub enum UserMessageKind {
     Unreliable,
-    ReliableUnordered {
-        msg_id: MessageId
-    },
-    Reliable {
-        msg_id: MessageId
-    }
+    ReliableUnordered { msg_id: MessageId },
+    Reliable { msg_id: MessageId },
 }
 
 #[derive(Clone, Encode, Decode)]
@@ -49,10 +45,7 @@ pub struct UserMessage {
 
 impl UserMessage {
     fn new(kind: UserMessageKind, payload: MessagePayload) -> Self {
-        Self {
-            kind, 
-            payload
-        }
+        Self { kind, payload }
     }
 
     pub fn new_reliable(msg_id: MessageId, payload: MessagePayload) -> Self {
@@ -84,7 +77,7 @@ impl UserMessage {
         let seq_id_size = match self.kind {
             UserMessageKind::ReliableUnordered { .. } => size_of::<PacketSeqId>(),
             UserMessageKind::Reliable { .. } => size_of::<PacketSeqId>(),
-            UserMessageKind::Unreliable => 0
+            UserMessageKind::Unreliable => 0,
         };
 
         // The cost of the enum tag for our message
@@ -129,12 +122,12 @@ pub struct PacketCrate {
 
     /// The base of the message window
     pub msg_base: MessageId,
-    
+
     /// The bitmap of the message window
     pub msg_map: MessageAckMap,
 
     /// A container of messages grouped under a single packet
-    pub messages: Vec<UserMessage>
+    pub messages: Vec<UserMessage>,
 }
 
 /// A packet crate is essentially a single super packet which packs together multiple user messages and acknowledgments (to the same destination)
@@ -165,7 +158,10 @@ impl PacketCrateBuilder {
     /// - Base acknowledgment ID (4)
     /// - Acknowledgment map (4)
     /// - Length of user messages (4)
-    const INIT_SIZE: usize = size_of::<PacketSeqId>() + size_of::<MessageId>() + size_of::<MessageAckMap>() + size_of::<u32>();
+    const INIT_SIZE: usize = size_of::<PacketSeqId>()
+        + size_of::<MessageId>()
+        + size_of::<MessageAckMap>()
+        + size_of::<u32>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
@@ -260,32 +256,30 @@ impl PacketCrateBuilder {
     }
 }
 
-
 /// Build an acknowledgment map from the provided **sorted** acknowledgment slice
-/// 
-/// It will return the base sequence ID from which to acknowledge packets and the map itself. 
-/// 
+///
+/// It will return the base sequence ID from which to acknowledge packets and the map itself.
+///
 /// This will not include base sequence ID into the map
 pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
     let base = window.window_position();
-    
+
     // Initialise the map
     let mut map = 0;
 
     // The read cursor
-    let mut cursor = (PacketAckMap::BITS-1) << 1;
+    let mut cursor = (PacketAckMap::BITS - 1) << 1;
 
     // For each bit
     for i in 0..PacketAckMap::BITS {
-        
         // If it's marked - put it on the map as well
-        if !window.is_marked(base+i) {
+        if !window.is_marked(base + i) {
             map |= cursor;
         }
 
         // Shift the cursor to the right
         cursor >>= 1;
-    } 
+    }
 
     (base, map)
 }

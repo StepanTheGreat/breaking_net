@@ -2,14 +2,14 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc};
 
 use crate::{
-    Reliability, 
-    packet::{MessageId, PacketCrateBuilder, UserMessage, build_ack_map}, 
+    Reliability,
+    packet::{MessageId, PacketCrateBuilder, UserMessage, build_ack_map},
     socket::ssock::SimpleSock,
-    window::SlidingAckWindow
+    window::SlidingAckWindow,
 };
 
 const PACKET_WINDOW_LEN: usize = 32;
-const MESSAGE_WINDOW_LEN: usize = 64; 
+const MESSAGE_WINDOW_LEN: usize = 64;
 
 /// Resend 10 times per second
 const RESEND_TIMER: f32 = 1.0 / 10.0;
@@ -18,7 +18,7 @@ const RESEND_TIMER: f32 = 1.0 / 10.0;
 pub struct SendContext<'a> {
     pub socket: &'a mut SimpleSock,
     pub packet_builder: &'a mut PacketCrateBuilder,
-    pub recv_packet_window: &'a SlidingAckWindow
+    pub recv_packet_window: &'a SlidingAckWindow,
 }
 
 /// A super simple sequence counter, that just increments and wrap arounds sequence ids
@@ -41,21 +41,21 @@ impl SequenceCounter {
 #[derive(Clone)]
 struct QueuedMessage {
     message: UserMessage,
-    timer: Option<f32>
+    timer: Option<f32>,
 }
 
 impl QueuedMessage {
     fn new_reliable(message: UserMessage, timer: f32) -> Self {
         Self {
             message,
-            timer: Some(timer)
+            timer: Some(timer),
         }
     }
 
     fn new_unreliable(message: UserMessage) -> Self {
         Self {
-            message, 
-            timer: None
+            message,
+            timer: None,
         }
     }
 
@@ -90,7 +90,6 @@ impl QueuedMessage {
     }
 }
 
-
 pub struct SendManager {
     /// The connection is directed to
     to: net::SocketAddr,
@@ -107,15 +106,15 @@ pub struct SendManager {
     /// The message ID counter
     message_counter: SequenceCounter,
 
-    /// A queue of messages to send with their respected decrementing timers 
+    /// A queue of messages to send with their respected decrementing timers
     message_queue: VecDeque<QueuedMessage>,
 
     /// The sliding window for our reliable messages
-    /// 
+    ///
     /// This tracks which messages the other side has received. This is particularly useful for knowing which messages to stop resending.
     /// Another utility - it allows us to know if a reliable message can even be sent (because we have a limited window capacity)
     send_message_window: SlidingAckWindow,
-} 
+}
 
 impl SendManager {
     pub fn new(to: net::SocketAddr, packets_per_second: usize) -> Self {
@@ -126,13 +125,13 @@ impl SendManager {
             packet_counter: SequenceCounter::new(),
             message_counter: SequenceCounter::new(),
             message_queue: VecDeque::new(),
-            send_message_window: SlidingAckWindow::new(64)
+            send_message_window: SlidingAckWindow::new(64),
         }
     }
 
-    /// Add this message to the message queue. 
-    /// 
-    /// Depending on its type, it will be dispatched the next frame 
+    /// Add this message to the message queue.
+    ///
+    /// Depending on its type, it will be dispatched the next frame
     pub fn queue_msg(&mut self, payload: Vec<u8>, reliability: Reliability) {
         let payload = Rc::new(payload);
 
@@ -153,7 +152,9 @@ impl SendManager {
             }
 
             // Unreliable however don't get themselves anything
-            Reliability::Unreliable => QueuedMessage::new_unreliable(UserMessage::new_unreliable(payload))
+            Reliability::Unreliable => {
+                QueuedMessage::new_unreliable(UserMessage::new_unreliable(payload))
+            }
         };
 
         self.message_queue.push_back(msg);
@@ -171,7 +172,6 @@ impl SendManager {
 
             // If the message is ready
             if message.is_ready() {
-
                 // Make sure to only remove unreliable messages
                 if message.message_id().is_none() {
                     self.message_queue.remove(ind);
@@ -202,11 +202,11 @@ impl SendManager {
 
     /// A separate polling method that specialises in sending messages
     fn prepare_and_send(
-        &mut self, 
-        socket: &mut SimpleSock, 
-        crate_builder: &mut PacketCrateBuilder, 
+        &mut self,
+        socket: &mut SimpleSock,
+        crate_builder: &mut PacketCrateBuilder,
         recv_message_window: &SlidingAckWindow,
-        dt: f32
+        dt: f32,
     ) {
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
         self.update_collect_candidates(dt, &mut candidates);
@@ -242,10 +242,8 @@ impl SendManager {
 
                 // If our crate can fit the message - put it
                 if crate_builder.can_fit(message.size()) {
-
                     // If this message is reliable - we're going to reset its timer
                     if let Some(message_id) = message.message_id() {
-
                         // Find it and reset its timer
                         self.message_queue
                             .iter_mut()
@@ -284,7 +282,7 @@ impl SendManager {
         }
     }
 
-    /// A message ID of ours was acknowledged by the receiver 
+    /// A message ID of ours was acknowledged by the receiver
     pub fn message_received(&mut self, msg_id: MessageId) {
         // We probably already processed this message ID before
         if !self.send_message_window.within_bounds(msg_id) {
@@ -299,9 +297,11 @@ impl SendManager {
         // But in any other case...
 
         // Try to find its index
-        let found = self.message_queue.iter()
+        let found = self
+            .message_queue
+            .iter()
             .position(|p| matches!(p.message_id(), Some(id) if id == msg_id));
-        
+
         // Pop from the queue
         if let Some(ind) = found {
             self.message_queue.remove(ind);
@@ -310,12 +310,7 @@ impl SendManager {
 
     /// Poll the send manager (this will send all the queued messages)
     pub fn poll(&mut self, ctx: SendContext, dt: f32) {
-        self.prepare_and_send(
-            ctx.socket, 
-            ctx.packet_builder, 
-            ctx.recv_packet_window, 
-            dt
-        );
+        self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
     }
 
     pub fn packets_sent(&self) -> usize {

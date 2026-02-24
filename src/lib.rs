@@ -1,16 +1,18 @@
+#![doc = include_str!("../README.md")]
+
 use std::sync::LazyLock;
 
+mod broadcast;
 mod crc32;
 mod packet;
 mod socket;
 mod window;
-mod broadcast;
 
 mod utils;
 
+pub use broadcast::*;
 pub use packet::Reliability;
 pub use socket::Socket;
-pub use broadcast::*;
 
 pub(crate) use utils::*;
 
@@ -28,19 +30,18 @@ pub(crate) const MTU_SIZE_PRIVATE: usize = 1200;
 /// The maximum transport unit for our messages. I'm using a much lower number here to avoid
 /// fragmentation on most networks, though usually you're supposed to query it directly from
 /// a network interface.
-pub const MTU_SIZE: usize = MTU_SIZE_PRIVATE-50;
+pub const MTU_SIZE: usize = MTU_SIZE_PRIVATE - 50;
 
-/// The protocol signature used when verifying received packets from other sockets 
-/// 
+/// The protocol signature used when verifying received packets from other sockets
+///
 /// A signature mismatch will cause packets to simply not get received (because there's an obvious signature mismatch)
-pub(crate) static PROTOCOL_SIGNATURE: LazyLock<&'static str> = LazyLock::new(|| {     
+pub(crate) static PROTOCOL_SIGNATURE: LazyLock<&'static str> = LazyLock::new(|| {
     // Format our signature as the combination of our protocol's name and version
     let signature = format!("bnet{}", env!("CARGO_PKG_VERSION"));
 
     // Leak it for the entire duration of the program
     signature.leak()
 });
-
 
 /// Super tiny macro for constructing [SocketAddr] values
 ///

@@ -4,7 +4,7 @@ use crate::packet::PacketSeqId;
 pub type BitPage = u64;
 
 /// The amount of bits in our bit page
-const PAGE_BITS: usize = BitPage::BITS as _;
+const PAGE_BITS: usize = BitPage::BITS as usize;
 
 /// A super minimal bitset implementation which allows setting bits at arbitrary positions and shifting the entire structure to the right
 #[derive(Clone)]
@@ -115,10 +115,10 @@ impl BitSet {
     }
 }
 
-/// The sliding window helps tracking unacknowledged packets. 
+/// The sliding window helps tracking unacknowledged packets.
 /// It has a base and a bitset, where each received packet coming after the base is marked with 1.
-/// 
-/// The window automatically slides whenever the window's lowest packet (the base) is received. 
+///
+/// The window automatically slides whenever the window's lowest packet (the base) is received.
 pub struct SlidingAckWindow {
     /// The position of the window (the oldest packet) to not get acknowledged
     window_pos: PacketSeqId,

@@ -1,33 +1,38 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque}, io, net
+    collections::{HashMap, HashSet, VecDeque},
+    io, net,
 };
 
-mod ssock;
 mod channels;
 mod connection;
+mod ssock;
 
-mod sender;
 mod receiver;
+mod sender;
 mod stats;
 
 pub use ssock::{SimpleSock, SockSettings};
 #[cfg(feature = "stress_testing")]
 pub use ssock::{
-    reset_stress_environment,
-    set_message_corruption_chance,
-    set_message_dublication_chance,
-    set_message_loss_chance,
-    set_message_reorder_chance
+    reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,
+    set_message_loss_chance, set_message_reorder_chance,
 };
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, 
+    MTU_SIZE, MTU_SIZE_PRIVATE,
     packet::{PacketCrate, PacketCrateBuilder, Reliability},
 };
 
 use connection::SocketConnection;
 
+/// A socket event describes some really rare socket events like connections and disconnections.
+pub enum SocketEvent {
+    /// A connection was established with the provided socket
+    Connection(net::SocketAddr),
 
+    /// A connection was terminated with the provided socket
+    Disconnection(net::SocketAddr),
+}
 
 pub struct ReceivedMessage {
     pub data: Vec<u8>,
@@ -35,6 +40,9 @@ pub struct ReceivedMessage {
     pub sender: net::SocketAddr,
 }
 
+/// The reliable socket used for reliable communications.
+///
+/// Automatically handles connection management (except for heartbeats), reliable delivery and so on.
 pub struct Socket {
     socket: SimpleSock,
 
@@ -43,10 +51,12 @@ pub struct Socket {
 
     requested_connections: HashSet<net::SocketAddr>,
 
-    recv_buffer: VecDeque<ReceivedMessage>,
+    event_queue: VecDeque<SocketEvent>,
+    message_queue: VecDeque<ReceivedMessage>,
 }
 
 impl Socket {
+    /// Create a new socket on the provided address
     pub fn new(addr: net::SocketAddr) -> io::Result<Self> {
         let socket = SimpleSock::new(addr, MTU_SIZE_PRIVATE)?;
 
@@ -57,7 +67,8 @@ impl Socket {
             connections: HashMap::with_capacity(2),
             requested_connections: HashSet::new(),
 
-            recv_buffer: VecDeque::new(),
+            event_queue: VecDeque::new(),
+            message_queue: VecDeque::new(),
         })
     }
 
@@ -73,28 +84,35 @@ impl Socket {
 
     /// Send a message to the provided address (under the hood this will allocate resources for a new connection, even though the connection
     /// isn't for now mutual)
+    ///
+    /// # Panics
+    /// Will panic if the amount of bytes sent exceeds the [MTU_SIZE] limit
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
         assert!(data.len() <= MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
-        let connection = self.connections.entry(*to)
+        let connection = self
+            .connections
+            .entry(*to)
             .or_insert(SocketConnection::new(*to));
 
-        connection.queue_message( data.to_owned(), how);
+        connection.queue_message(data.to_owned(), how);
     }
 
     /// Receive and distribute (to connections) messages
     fn receive_messages(&mut self) {
         while let Some((data, sender)) = self.socket.recv_from() {
-
             // If it's decodable
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
                 Ok(pcrate) => pcrate,
-                Err(_) => continue
+                Err(_) => continue,
             };
 
             // If we received a message from a requested address - we'll automatically create a connection to it
             if self.requested_connections.remove(&sender) {
                 self.connect(sender);
+
+                // Push a connection event
+                self.event_queue.push_front(SocketEvent::Connection(sender));
             }
 
             // Get or make a new socket connection for this message
@@ -107,14 +125,13 @@ impl Socket {
 
             // Now we're going to iterate every single message
             for message in pcrate.messages {
-
                 // If we have a connection and our message contains a message ID - we're going to notify our connection about it
                 if let Some(conn) = connection.as_mut() {
                     // Process it (filter, reorder it and so on)
                     conn.process_message(message);
                 } else {
                     // In any other case we're just going to buffer it without a connection
-                    self.recv_buffer.push_back(ReceivedMessage {
+                    self.message_queue.push_back(ReceivedMessage {
                         sender: sender,
                         reliability: message.reliability(),
                         data: message.consume_payload().unwrap(),
@@ -134,7 +151,7 @@ impl Socket {
                 let sender = connection.to_addr();
 
                 // Finally, add it to our queue
-                self.recv_buffer.push_back(ReceivedMessage {
+                self.message_queue.push_back(ReceivedMessage {
                     data: message.consume_payload().unwrap(),
                     reliability,
                     sender,
@@ -144,6 +161,9 @@ impl Socket {
     }
 
     /// Poll this socket thus updating its inner receive buffer and sending data.
+    ///
+    /// # Panics
+    /// This will panic if delta is negative. It doesn't make any sense.
     pub fn poll(&mut self, dt: f32) {
         assert!(dt >= 0.0);
 
@@ -154,13 +174,24 @@ impl Socket {
         self.poll_connections(dt);
     }
 
-    /// Check if we got a message
+    /// Try receive a message (if there is any)
     pub fn recv_from(&mut self) -> Option<ReceivedMessage> {
-        self.recv_buffer.pop_front()
+        self.message_queue.pop_front()
     }
 
+    /// Take a socket event if one is present
+    pub fn get_event(&mut self) -> Option<SocketEvent> {
+        self.event_queue.pop_front()
+    }
+
+    /// Check if the socket has any messages
     pub fn has_messages(&self) -> bool {
-        !self.recv_buffer.is_empty()
+        !self.message_queue.is_empty()
+    }
+
+    /// Check if the socket has any events
+    pub fn has_events(&self) -> bool {
+        !self.event_queue.is_empty()
     }
 
     /// "Establish" a new connection to the provided address.
@@ -168,13 +199,13 @@ impl Socket {
     /// This doesn't actually establish anything, it just creates a logical connection between this address.
     /// Note that if the other address doesn't send any messages whatsoever - this connection will close very quickly.
     pub fn connect(&mut self, addr: net::SocketAddr) {
-        if !self.connections.contains_key(&addr) {
-            self.connections.insert(addr, SocketConnection::new(addr));
-        }
+        self.connections
+            .entry(addr)
+            .or_insert(SocketConnection::new(addr));
     }
 
     /// How many messages are available
     pub fn messages(&self) -> usize {
-        self.recv_buffer.len()
+        self.message_queue.len()
     }
 }

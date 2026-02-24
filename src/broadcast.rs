@@ -1,14 +1,20 @@
 use std::io;
 use std::net;
 
-use crate::{MTU_SIZE_PRIVATE, MTU_SIZE, socket_addr};
 use crate::socket::{SimpleSock, SockSettings};
+use crate::{MTU_SIZE, MTU_SIZE_PRIVATE, socket_addr};
 
+/// A broadcast listener *listens* for broadcast packets.
+///
+/// You could use one to for example, listen for game invites and other public information.
 pub struct BroadcastListener {
     socket: SimpleSock,
 }
 
 impl BroadcastListener {
+    /// Create a new broadcast listener that will listen at the provided socket address
+    ///
+    /// Note that multiple broadcast listeners can sit on the same port, since they shared.
     pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
         let socket = SimpleSock::new_ex(
             socket_addr,
@@ -47,6 +53,9 @@ pub struct BroadcastWriter {
 }
 
 impl BroadcastWriter {
+    /// Create a new broadcast writer for the provided address and port.
+    ///
+    /// The port will be used for dispatching broadcasts
     pub fn new(socket_addr: net::SocketAddr, port: u16) -> io::Result<Self> {
         // The address to which we're going to send messages
         let broadcast_addr = socket_addr!(broadcast;port);
@@ -74,7 +83,8 @@ impl BroadcastWriter {
 
     /// Send a broadcast message
     ///
-    /// Note that this method will panic, if data's length is more than [MTU_SIZE]
+    /// # Panics
+    /// This method will panic, if data contains more bytes than is permissible by [MTU_SIZE]
     pub fn send(&mut self, data: &[u8]) -> Result<(), io::Error> {
         assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 

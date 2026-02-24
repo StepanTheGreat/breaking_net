@@ -1,3 +1,5 @@
+//! Test basic socket interactions
+
 use breaking_net::*;
 use std::net;
 
@@ -87,7 +89,6 @@ fn test_mtu_limits() {
     assert!(!sock_b.has_messages());
     assert!(!sock_a.has_messages());
 }
-
 
 #[test]
 fn test_corruption_detection() {
@@ -248,10 +249,9 @@ fn test_continuous_reliable_dialogue() {
     let mut messages = MESSAGES;
 
     while messages > 0 {
-
         // Send multiple messages per single iteration
         for _ in 0..MESSAGES_PER_ITER {
-            let msg = [messages; MESSAGE_LEN]; 
+            let msg = [messages; MESSAGE_LEN];
 
             sock_a.send_to(&sock_b.addr(), &msg, Reliability::Reliable);
             sock_b.send_to(&sock_a.addr(), &msg, Reliability::Reliable);
@@ -282,7 +282,6 @@ fn test_continuous_reliable_dialogue() {
     assert!(!sock_b.has_messages());
 }
 
-
 /// Test a continous message dialogue
 #[test]
 #[ignore = "RTT not yet implemented"]
@@ -300,7 +299,7 @@ fn test_round_trip_time() {
     // assert_eq!(sock_a.round_trip_time(sock_b.addr()).unwrap(), 0.0);
 
     let msg = b"Test message";
-    
+
     // Send a message to B
     sock_a.send_to(&sock_b.addr(), msg, Reliability::Reliable);
 
@@ -313,8 +312,6 @@ fn test_round_trip_time() {
     // Receive the message
     sock_b.recv_from().unwrap();
 
-    // The round trip time must be larger than 0 
+    // The round trip time must be larger than 0
     // assert!(sock_a.round_trip_time(sock_b.addr()).unwrap() > 0.0);
-
-
 }

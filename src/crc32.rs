@@ -65,7 +65,7 @@ pub fn crc32_multi(data_slices: &[&[u8]]) -> u32 {
         for chunk in data_slice.iter().copied() {
             // Compute an index from our remainder+chunk (^ to avoid carries)
             let ind = ((remainder as u8) ^ chunk) as usize;
-    
+
             // Finally, move the byte out and add our precomputed CRC value to the remainder
             remainder = (remainder >> 8) ^ CRC32_TABLE[ind];
         }
@@ -82,45 +82,42 @@ pub fn crc32(data: &[u8]) -> u32 {
 
 /// Verify the CRC32 signed data slice. This expects data in the specified format:
 /// `[..data][4 crc32 bytes]`
-pub fn crc32_verify(data: &[u8], signature: Option<&str>) -> bool {    
+pub fn crc32_verify(data: &[u8], signature: Option<&str>) -> bool {
     if data.len() < CRC32_SIG_LEN {
         // Can't fit the CRC signature - automatically fail
         return false;
     }
 
     let data_crc_len = data.len();
-    let data_len = data_crc_len-CRC32_SIG_LEN;
+    let data_len = data_crc_len - CRC32_SIG_LEN;
     let signature = signature.unwrap_or("");
 
     let crc_bytes = &data[data_len..data_crc_len];
 
-    let actual_crc_bytes = crc32_multi(&[
-        &data[..data_len],
-        signature.as_bytes()
-    ]).to_be_bytes();
+    let actual_crc_bytes = crc32_multi(&[&data[..data_len], signature.as_bytes()]).to_be_bytes();
 
     crc_bytes == actual_crc_bytes
 }
 
 /// Take the provided mutable array and sign it with a CRC32 signature right at the end.
-/// 
+///
 /// The slice taken must be a slice capable of fitting data + crc32 signature (+4 bytes). So the overall layout is:
 /// `[..data][4 empty CRC32 bytes]`
 ///
 /// The last 4 bytes will be overwritten with a CRC32 signature
 pub fn crc32_sign(data: &mut [u8], signature: Option<&str>) {
-    assert!(data.len() >= CRC32_SIG_LEN, "Can't sign the provided data slice, since it can't fit a CRC32 signature");
-    
+    assert!(
+        data.len() >= CRC32_SIG_LEN,
+        "Can't sign the provided data slice, since it can't fit a CRC32 signature"
+    );
+
     let data_crc_len = data.len();
-    let data_len = data_crc_len-CRC32_SIG_LEN;
+    let data_len = data_crc_len - CRC32_SIG_LEN;
 
     let signature = signature.unwrap_or("");
 
     // Compute the signature of our data + signature
-    let crc_bytes = crc32_multi(&[
-        &data[..data_len],
-        signature.as_bytes()
-    ]).to_be_bytes();
+    let crc_bytes = crc32_multi(&[&data[..data_len], signature.as_bytes()]).to_be_bytes();
 
     // Embed it into the slice
     data[data_len..data_crc_len].copy_from_slice(&crc_bytes);
@@ -163,7 +160,10 @@ mod tests {
             (b"", &[b"", b""]),
             (b"a", &[b"", b"a"]),
             (b"abc", &[b"ab", b"c"]),
-            (b"abcdefghijklmnopqrstuvwxyz", &[b"abcdefghij", b"klmnopqrstuvwxyz"]),
+            (
+                b"abcdefghijklmnopqrstuvwxyz",
+                &[b"abcdefghij", b"klmnopqrstuvwxyz"],
+            ),
         ];
 
         for (input_single, input_multi) in TEST_PAIRS {

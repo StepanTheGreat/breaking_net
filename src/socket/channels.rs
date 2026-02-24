@@ -4,7 +4,10 @@
 //!
 //! Some messages serve a bit more purposes than that, but the primary usecases are these.
 
-use std::{cmp::Reverse, collections::{BTreeMap, VecDeque}};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, VecDeque},
+};
 
 use crate::{
     Reliability,
@@ -23,14 +26,16 @@ pub trait Channel {
 
 struct ReorderedMessage {
     message: UserMessage,
-    
+
     // This is reversed to ensure that we sort from the smallest to the biggest sequenced message ID
-    msg_id: Reverse<MessageId>
+    msg_id: Reverse<MessageId>,
 }
 
 impl ReorderedMessage {
     pub fn new(message: UserMessage) -> Self {
-        let msg_id = message.message_id().expect("Reordered messages must always contain a sequence ID");
+        let msg_id = message
+            .message_id()
+            .expect("Reordered messages must always contain a sequence ID");
 
         Self {
             msg_id: Reverse(msg_id),

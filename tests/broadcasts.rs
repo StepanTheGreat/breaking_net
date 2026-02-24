@@ -1,3 +1,5 @@
+//! Test basic broadcast usage
+
 use std::net;
 
 use breaking_net::*;

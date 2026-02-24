@@ -18,7 +18,7 @@ mod stress_testing {
         static MESSAGE_REORDER_CHANCE: Cell<f32> = Cell::default();
 
         pub(crate) static RNG_STATE: LazyCell<RefCell<SmallRng>> = LazyCell::new(||
-            RefCell::new(rand::rngs::SmallRng::from_os_rng())
+            RefCell::new(SmallRng::from_os_rng())
         );
     }
 
@@ -92,7 +92,10 @@ use std::{io, mem::MaybeUninit, net};
 #[cfg(feature = "stress_testing")]
 pub use stress_testing::*;
 
-use crate::{PROTOCOL_SIGNATURE, crc32::{CRC32_SIG_LEN, crc32_sign, crc32_verify}};
+use crate::{
+    PROTOCOL_SIGNATURE,
+    crc32::{CRC32_SIG_LEN, crc32_sign, crc32_verify},
+};
 
 #[derive(Default, Clone, Copy)]
 pub struct SockSettings {
@@ -115,16 +118,11 @@ pub struct SimpleSock {
 
     send_buffer: Box<[u8]>,
 
-    mtu: usize
+    mtu: usize,
 }
 
 impl SimpleSock {
-    pub fn new_ex(
-        addr: net::SocketAddr,
-        mtu: usize,
-        settings: SockSettings,
-    ) -> io::Result<Self> {
-
+    pub fn new_ex(addr: net::SocketAddr, mtu: usize, settings: SockSettings) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             sock::Domain::IPV4
         } else {
@@ -152,9 +150,9 @@ impl SimpleSock {
         // Get our protocol signature
         let signature = *PROTOCOL_SIGNATURE;
 
-        // Our buffers will be *slightly* larger to accomodate for the signature. The signature however isn't send, 
+        // Our buffers will be *slightly* larger to accomodate for the signature. The signature however isn't send,
         // it's only used for CRC checks
-        let buffer_capacity = mtu + signature.bytes().len();
+        let buffer_capacity = mtu + signature.len();
 
         Ok(Self {
             socket,
@@ -178,14 +176,14 @@ impl SimpleSock {
             return Ok(());
         }
 
-        if data.len() > self.mtu-CRC32_SIG_LEN {
+        if data.len() > self.mtu - CRC32_SIG_LEN {
             return Err(io::Error::other("Reached socket's MTU limits"));
         }
 
         // TODO: The socket shouldn't be responsible for verifying data integrity. It should be the responsibility of the layer
         // TODO: above. A socket is just a dumb primitive for sending/receiving data (and simulating network environment)
-        let data_len = data.len();        
-        let data_crc_len = data_len+CRC32_SIG_LEN;
+        let data_len = data.len();
+        let data_crc_len = data_len + CRC32_SIG_LEN;
 
         // Copy the message to our buffer
         self.send_buffer[..data_len].copy_from_slice(data);
@@ -238,8 +236,8 @@ impl SimpleSock {
 
                 // Only return when signatures match
                 if crc_valid {
-                    let data_len = read-CRC32_SIG_LEN;
-                    
+                    let data_len = read - CRC32_SIG_LEN;
+
                     Some((&self.recv_buffer[..data_len], addr.as_socket()?))
                 } else {
                     None
