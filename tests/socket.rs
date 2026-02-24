@@ -282,6 +282,42 @@ fn test_continuous_reliable_dialogue() {
     assert!(!sock_b.has_messages());
 }
 
+/// Test if heartbeat
+#[test]
+fn test_heartbeat() {
+    reset_stress_environment();
+
+    let mut sock_a = Socket::new(ADDR_A).unwrap();
+    let mut sock_b = Socket::new(ADDR_B).unwrap();
+
+    // First we're going to connect them together
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
+    // Clear out connection events
+    sock_a.get_event().unwrap();
+    sock_b.get_event().unwrap();
+
+    assert!(sock_a.is_connected(&sock_b.addr()));
+    assert!(sock_b.is_connected(&sock_a.addr()));
+
+    // Poll them for 10 while seconds (more than enough to time out)
+    poll_socks!(10.0, [sock_a, sock_b]);
+
+    // They should be no longer corrected
+    assert!(!sock_a.is_connected(&sock_b.addr()));
+    assert!(!sock_b.is_connected(&sock_a.addr()));
+
+    assert_eq!(
+        sock_a.get_event().unwrap(),
+        SocketEvent::Disconnection(sock_b.addr())
+    );
+    assert_eq!(
+        sock_b.get_event().unwrap(),
+        SocketEvent::Disconnection(sock_a.addr())
+    );
+}
+
 /// Test a continous message dialogue
 #[test]
 #[ignore = "RTT not yet implemented"]

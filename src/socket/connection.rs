@@ -1,8 +1,8 @@
 use std::net;
 
 use crate::{
-    Reliability,
-    packet::{MessageAckMap, MessageId, PacketAckMap, PacketCrateBuilder, UserMessage},
+    Reliability, Timer,
+    packet::{MessageAckMap, MessageId, PacketCrateBuilder, UserMessage},
     socket::{
         SimpleSock,
         receiver::ReceiveManager,
@@ -10,11 +10,8 @@ use crate::{
     },
 };
 
-const PACKET_WINDOW_LEN: usize = 32;
-const MESSAGE_WINDOW_LEN: usize = 64;
-
-/// Resend 10 times per second
-const RESEND_TIMER: f32 = 1.0 / 10.0;
+/// After how many seconds to time out without receiving any packets
+const MAX_HEARBEAT_TIME: f32 = 5.0;
 
 pub struct SocketConnection {
     /// The connection is directed to
@@ -23,6 +20,8 @@ pub struct SocketConnection {
     sender: SendManager,
 
     receiver: ReceiveManager,
+
+    last_hearbeat: Timer,
 }
 
 impl SocketConnection {
@@ -34,28 +33,35 @@ impl SocketConnection {
             to,
             sender,
             receiver,
+            last_hearbeat: Timer::new(MAX_HEARBEAT_TIME),
         }
     }
 
-    /// Acknowledgments for my messages have been received on this connection
+    pub fn reset_heartbeat_timer(&mut self) {
+        self.last_hearbeat.set_time(MAX_HEARBEAT_TIME);
+    }
+
+    /// Acknowledgments for our messages have been received on this connection
     pub fn sent_message_acknowledgments_received(
         &mut self,
-        ack_base: MessageId,
-        ack_map: MessageAckMap,
+        msg_base: MessageId,
+        msg_map: MessageAckMap,
     ) {
         // No acknowledgments
-        if ack_base == 0 && ack_map == 0 {
+        if msg_base == 0 && msg_map == 0 {
             return;
         }
+
+        self.sender.set_send_message_received_base(msg_base);
 
         // Init the cursor
         let mut cursor = 1 << (MessageAckMap::BITS - 1);
 
         // For each bit
         for bind in 0..MessageAckMap::BITS {
-            if (ack_map & cursor) > 0 {
-                let msg_id = ack_base + bind;
-                self.receiver.mark_sent_message_received(msg_id);
+            if (msg_map & cursor) > 0 {
+                let msg_id = msg_base + bind;
+                self.sender.mark_sent_message_received(msg_id);
             }
 
             // Move the cursor to the right
@@ -69,6 +75,9 @@ impl SocketConnection {
         crate_builder: &mut PacketCrateBuilder,
         dt: f32,
     ) {
+        // Tick our heartbeat timer
+        self.last_hearbeat.tick(dt);
+
         // Poll our sender
         self.sender.poll(
             SendContext {
@@ -97,5 +106,10 @@ impl SocketConnection {
 
     pub fn to_addr(&self) -> net::SocketAddr {
         self.to
+    }
+
+    /// Check if this connection has timed out (no packets received)
+    pub fn timed_out(&self) -> bool {
+        self.last_hearbeat.timed_out()
     }
 }

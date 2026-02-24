@@ -48,7 +48,10 @@ impl BitSet {
 
     /// Get the value of the provided bit (indexed by bit index)
     pub fn get(&self, index: usize) -> bool {
-        assert!(index < self.bit_len());
+        assert!(
+            index < self.bit_len(),
+            "Binary index outside bitset's range"
+        );
 
         let offset = index % PAGE_BITS;
 

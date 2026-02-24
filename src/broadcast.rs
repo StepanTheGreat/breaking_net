@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::io;
 use std::net;
 
@@ -8,6 +9,7 @@ use crate::{MTU_SIZE, MTU_SIZE_PRIVATE, socket_addr};
 ///
 /// You could use one to for example, listen for game invites and other public information.
 pub struct BroadcastListener {
+    listen_addr: net::SocketAddr,
     socket: SimpleSock,
 }
 
@@ -15,9 +17,9 @@ impl BroadcastListener {
     /// Create a new broadcast listener that will listen at the provided socket address
     ///
     /// Note that multiple broadcast listeners can sit on the same port, since they shared.
-    pub fn new(socket_addr: net::SocketAddr) -> io::Result<Self> {
+    pub fn new(listen_addr: net::SocketAddr) -> io::Result<Self> {
         let socket = SimpleSock::new_ex(
-            socket_addr,
+            listen_addr,
             MTU_SIZE_PRIVATE,
             SockSettings {
                 reuses_address: true,
@@ -25,7 +27,10 @@ impl BroadcastListener {
             },
         )?;
 
-        Ok(Self { socket })
+        Ok(Self {
+            listen_addr,
+            socket,
+        })
     }
 
     /// Check if this listener has any messages without consuming them from the queue
@@ -89,5 +94,17 @@ impl BroadcastWriter {
         assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
         self.socket.send_to(data, self.broadcast_addr)
+    }
+}
+
+impl Debug for BroadcastWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<BroadcastWriter: {}>", self.broadcast_addr)
+    }
+}
+
+impl Debug for BroadcastListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<BroadcastListener = {}>", self.listen_addr)
     }
 }

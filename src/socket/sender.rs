@@ -2,14 +2,11 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc};
 
 use crate::{
-    Reliability,
+    Reliability, Timer,
     packet::{MessageId, PacketCrateBuilder, UserMessage, build_ack_map},
     socket::ssock::SimpleSock,
     window::SlidingAckWindow,
 };
-
-const PACKET_WINDOW_LEN: usize = 32;
-const MESSAGE_WINDOW_LEN: usize = 64;
 
 /// Resend 10 times per second
 const RESEND_TIMER: f32 = 1.0 / 10.0;
@@ -41,14 +38,14 @@ impl SequenceCounter {
 #[derive(Clone)]
 struct QueuedMessage {
     message: UserMessage,
-    timer: Option<f32>,
+    timer: Option<Timer>,
 }
 
 impl QueuedMessage {
-    fn new_reliable(message: UserMessage, timer: f32) -> Self {
+    fn new_reliable(message: UserMessage, time: f32) -> Self {
         Self {
             message,
-            timer: Some(timer),
+            timer: Some(Timer::new(time)),
         }
     }
 
@@ -61,13 +58,15 @@ impl QueuedMessage {
 
     fn tick(&mut self, dt: f32) {
         if let Some(timer) = self.timer.as_mut() {
-            *timer = (*timer - dt).max(0.0);
+            timer.tick(dt);
         }
     }
 
     /// Is this queued message ready?
+    ///
+    /// Unreliable messages are always ready. Reliable however, are only ready whenever their timer hits zero
     fn is_ready(&self) -> bool {
-        self.timer.unwrap_or(0.0) == 0.0
+        self.timer.map(|timer| timer.timed_out()).unwrap_or(true)
     }
 
     fn size(&self) -> usize {
@@ -85,7 +84,7 @@ impl QueuedMessage {
     /// Update this message's timer
     fn set_timer(&mut self, new_time: f32) {
         if let Some(timer) = self.timer.as_mut() {
-            *timer = new_time;
+            timer.set_time(new_time);
         }
     }
 }
@@ -96,9 +95,6 @@ pub struct SendManager {
 
     /// The amount of packets per second
     packets_per_second: usize,
-
-    /// The amount packets we sent
-    packets_sent: usize,
 
     /// The packet ID counter
     packet_counter: SequenceCounter,
@@ -121,7 +117,6 @@ impl SendManager {
         Self {
             to,
             packets_per_second,
-            packets_sent: 0,
             packet_counter: SequenceCounter::new(),
             message_counter: SequenceCounter::new(),
             message_queue: VecDeque::new(),
@@ -282,38 +277,32 @@ impl SendManager {
         }
     }
 
+    pub fn cleanup_received_messages(&mut self) {
+        let window = &self.send_message_window;
+
+        self.message_queue.retain(|msg| match msg.message_id() {
+            Some(msg_id) => !window.is_old(msg_id) && !window.is_marked(msg_id),
+            None => true,
+        });
+    }
+
+    /// A new base was received (all messages before it were received), thus we must shift our window
+    pub fn set_send_message_received_base(&mut self, new_base: MessageId) {
+        // While our base is lower than the current window position
+        while new_base > self.send_message_window.window_position() {
+            self.send_message_window
+                .mark(self.send_message_window.window_position());
+        }
+    }
+
     /// A message ID of ours was acknowledged by the receiver
-    pub fn message_received(&mut self, msg_id: MessageId) {
-        // We probably already processed this message ID before
-        if !self.send_message_window.within_bounds(msg_id) {
-            return;
-        }
-
-        // Already marked, we processed it already
-        if self.send_message_window.is_marked(msg_id) {
-            return;
-        }
-
-        // But in any other case...
-
-        // Try to find its index
-        let found = self
-            .message_queue
-            .iter()
-            .position(|p| matches!(p.message_id(), Some(id) if id == msg_id));
-
-        // Pop from the queue
-        if let Some(ind) = found {
-            self.message_queue.remove(ind);
-        }
+    pub fn mark_sent_message_received(&mut self, msg_id: MessageId) {
+        self.send_message_window.mark(msg_id);
     }
 
     /// Poll the send manager (this will send all the queued messages)
     pub fn poll(&mut self, ctx: SendContext, dt: f32) {
+        self.cleanup_received_messages();
         self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
-    }
-
-    pub fn packets_sent(&self) -> usize {
-        self.packets_sent
     }
 }

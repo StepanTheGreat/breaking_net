@@ -12,3 +12,35 @@ macro_rules! poll_socks {
         poll_socks!(1, $dt, [$($sock),*]);
     }
 }
+
+/// A utility timer
+#[derive(Clone, Copy)]
+pub(crate) struct Timer {
+    left: f32,
+}
+
+impl Timer {
+    /// Create a new timer with the provided amount of time left (must not be negative)
+    pub fn new(left: f32) -> Self {
+        assert!(left >= 0.0, "Delta time must be positive or zero");
+
+        Self { left }
+    }
+
+    /// Update this clock's time
+    pub fn tick(&mut self, dt: f32) {
+        self.left = (self.left - dt).max(0.0);
+    }
+
+    /// A clock will time out if there's no more time left
+    pub fn timed_out(&self) -> bool {
+        self.left == 0.0
+    }
+
+    /// Set time on the clock
+    pub fn set_time(&mut self, to: f32) {
+        assert!(to >= 0.0, "Delta time must be positive or zero");
+
+        self.left = to;
+    }
+}

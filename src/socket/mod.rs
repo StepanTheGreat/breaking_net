@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
     io, net,
 };
 
@@ -26,14 +27,20 @@ use crate::{
 use connection::SocketConnection;
 
 /// A socket event describes some really rare socket events like connections and disconnections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketEvent {
-    /// A connection was established with the provided socket
+    /// A connection was established with the provided socket.
+    ///
+    /// You can establish one simply by sending a message or responding to one
     Connection(net::SocketAddr),
 
-    /// A connection was terminated with the provided socket
+    /// A connection was terminated with the provided socket.
+    ///
+    /// This happens when there are no more packets received from the other socket
     Disconnection(net::SocketAddr),
 }
 
+#[derive(Debug)]
 pub struct ReceivedMessage {
     pub data: Vec<u8>,
     pub reliability: Reliability,
@@ -49,8 +56,6 @@ pub struct Socket {
     packet_builder: PacketCrateBuilder,
     connections: HashMap<net::SocketAddr, SocketConnection>,
 
-    requested_connections: HashSet<net::SocketAddr>,
-
     event_queue: VecDeque<SocketEvent>,
     message_queue: VecDeque<ReceivedMessage>,
 }
@@ -64,8 +69,7 @@ impl Socket {
             socket,
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
-            connections: HashMap::with_capacity(2),
-            requested_connections: HashSet::new(),
+            connections: HashMap::new(),
 
             event_queue: VecDeque::new(),
             message_queue: VecDeque::new(),
@@ -90,12 +94,12 @@ impl Socket {
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
         assert!(data.len() <= MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
 
-        let connection = self
-            .connections
-            .entry(*to)
-            .or_insert(SocketConnection::new(*to));
+        self.connect(*to);
 
-        connection.queue_message(data.to_owned(), how);
+        self.connections
+            .get_mut(to)
+            .unwrap()
+            .queue_message(data.to_owned(), how);
     }
 
     /// Receive and distribute (to connections) messages
@@ -107,20 +111,16 @@ impl Socket {
                 Err(_) => continue,
             };
 
-            // If we received a message from a requested address - we'll automatically create a connection to it
-            if self.requested_connections.remove(&sender) {
-                self.connect(sender);
-
-                // Push a connection event
-                self.event_queue.push_front(SocketEvent::Connection(sender));
-            }
-
-            // Get or make a new socket connection for this message
+            // Get a connection for this sender
             let mut connection = self.connections.get_mut(&sender);
 
-            // If this is a message from a known connection - let it mark all the acknowledgments it needs
+            // If this is a message from a known connection
             if let Some(conn) = connection.as_mut() {
+                // let it mark all the acknowledgments it needs
                 conn.sent_message_acknowledgments_received(pcrate.msg_base, pcrate.msg_map);
+
+                // and reset its hearbeat timer as well
+                conn.reset_heartbeat_timer();
             }
 
             // Now we're going to iterate every single message
@@ -157,7 +157,17 @@ impl Socket {
                     sender,
                 });
             }
+
+            // If this connection has timed out - we're going to notify the user
+            if connection.timed_out() {
+                self.event_queue
+                    .push_front(SocketEvent::Disconnection(connection.to_addr()));
+            }
         }
+
+        // Clear out all connections that were timed out
+        self.connections
+            .retain(|_, connection| !connection.timed_out());
     }
 
     /// Poll this socket thus updating its inner receive buffer and sending data.
@@ -165,7 +175,7 @@ impl Socket {
     /// # Panics
     /// This will panic if delta is negative. It doesn't make any sense.
     pub fn poll(&mut self, dt: f32) {
-        assert!(dt >= 0.0);
+        assert!(dt >= 0.0, "Delta time must be positive or zero");
 
         // We're going to collect all messages received by this socket
         self.receive_messages();
@@ -199,13 +209,21 @@ impl Socket {
     /// This doesn't actually establish anything, it just creates a logical connection between this address.
     /// Note that if the other address doesn't send any messages whatsoever - this connection will close very quickly.
     pub fn connect(&mut self, addr: net::SocketAddr) {
-        self.connections
-            .entry(addr)
-            .or_insert(SocketConnection::new(addr));
+        // If there's not yet connection
+        if !self.connections.contains_key(&addr) {
+            self.event_queue.push_front(SocketEvent::Connection(addr));
+            self.connections.insert(addr, SocketConnection::new(addr));
+        }
     }
 
     /// How many messages are available
     pub fn messages(&self) -> usize {
         self.message_queue.len()
+    }
+}
+
+impl Debug for Socket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<Socket: {}>", self.addr())
     }
 }

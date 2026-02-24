@@ -11,9 +11,9 @@ This is especially useful in dynamic applications that sometimes don't care abou
 - [x] Packet batching
 - [x] Better acknowledgments (using bitmaps)
 - [x] Protocol versioning
+- [x] Heartbeat management
+- [x] Socket events (instead of simply packets)
 - [ ] Fixed tickrate
-- [ ] Heartbeat management
-- [ ] Socket events (instead of simply packets)
 - [ ] Fragmentation
 - [ ] Congestion control + RTT
 - [ ] Basic DoS prevention

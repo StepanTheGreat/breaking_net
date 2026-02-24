@@ -196,15 +196,10 @@ impl PacketCrateBuilder {
 
     pub fn put_user_message(&mut self, packet: UserMessage) {
         let size = packet.size();
-        assert!(self.can_fit(size));
+        assert!(self.can_fit(size), "Unable to fit the provided packet");
 
         self.user_messages.as_mut().unwrap().push(packet);
         self.size += size;
-    }
-
-    /// How many acknowledgments can this crate fit?
-    pub fn available_ack_slots(&self) -> usize {
-        self.free_space() / size_of::<PacketSeqId>()
     }
 
     /// Clear this packet crate for reusability
@@ -256,12 +251,12 @@ impl PacketCrateBuilder {
     }
 }
 
-/// Build an acknowledgment map from the provided **sorted** acknowledgment slice
+/// Build an acknowledgment map from the provided sliding ack window
 ///
 /// It will return the base sequence ID from which to acknowledge packets and the map itself.
 ///
-/// This will not include base sequence ID into the map
-pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
+/// The base ID is included in the map
+pub fn build_ack_map(window: &SlidingAckWindow) -> (MessageId, MessageAckMap) {
     let base = window.window_position();
 
     // Initialise the map
@@ -271,9 +266,9 @@ pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
     let mut cursor = (PacketAckMap::BITS - 1) << 1;
 
     // For each bit
-    for i in 0..PacketAckMap::BITS {
+    for i in 0..MessageAckMap::BITS {
         // If it's marked - put it on the map as well
-        if !window.is_marked(base + i) {
+        if window.is_marked(base + i) {
             map |= cursor;
         }
 

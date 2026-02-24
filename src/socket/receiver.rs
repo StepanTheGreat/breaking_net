@@ -1,5 +1,5 @@
 use crate::{
-    packet::{MessageId, UserMessage},
+    packet::UserMessage,
     socket::channels::{Channel, ChannelStorage},
     window::SlidingAckWindow,
 };
@@ -18,9 +18,6 @@ pub struct ReceiveManager {
     /// This is somewhat similar to [ReceiveManager::recv_message_window], but it tracks packets instead.
     /// This is only useful for tracking which packets we received from the other socket.
     recv_packet_window: SlidingAckWindow,
-
-    /// Sequence IDs of messages that were sent by us. Useful for knowing which messages that we sent were actually delievered
-    send_message_window: SlidingAckWindow,
 }
 
 impl ReceiveManager {
@@ -33,13 +30,7 @@ impl ReceiveManager {
 
             recv_message_window: SlidingAckWindow::new(window_len),
             recv_packet_window: SlidingAckWindow::new(window_len),
-            send_message_window: SlidingAckWindow::new(window_len),
         }
-    }
-
-    /// Mark the provided message ID as received
-    pub fn mark_sent_message_received(&mut self, msg_id: MessageId) {
-        self.send_message_window.mark(msg_id);
     }
 
     /// Process the provided user message

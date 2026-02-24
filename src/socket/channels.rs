@@ -4,10 +4,7 @@
 //!
 //! Some messages serve a bit more purposes than that, but the primary usecases are these.
 
-use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, VecDeque},
-};
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     Reliability,
@@ -22,38 +19,6 @@ pub trait Channel {
 
     /// Try receive a message (if available)
     fn recv_message(&mut self, window: &SlidingAckWindow) -> Option<UserMessage>;
-}
-
-struct ReorderedMessage {
-    message: UserMessage,
-
-    // This is reversed to ensure that we sort from the smallest to the biggest sequenced message ID
-    msg_id: Reverse<MessageId>,
-}
-
-impl ReorderedMessage {
-    pub fn new(message: UserMessage) -> Self {
-        let msg_id = message
-            .message_id()
-            .expect("Reordered messages must always contain a sequence ID");
-
-        Self {
-            msg_id: Reverse(msg_id),
-            message,
-        }
-    }
-}
-
-impl PartialEq for ReorderedMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.msg_id.eq(&other.msg_id)
-    }
-}
-
-impl PartialOrd for ReorderedMessage {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.msg_id.partial_cmp(&other.msg_id)
-    }
 }
 
 /// A fully reliable channel (reliable and ordered). The slowest, but most reliable
@@ -74,7 +39,11 @@ impl ReliableChannel {
 
 impl Channel for ReliableChannel {
     fn process_message(&mut self, window: &SlidingAckWindow, message: UserMessage) {
-        assert_eq!(message.reliability(), Reliability::Reliable);
+        assert_eq!(
+            message.reliability(),
+            Reliability::Reliable,
+            "Only reliable messages can be processed in on the reliable channel"
+        );
 
         // Get the most recent window position
         self.window_pos = window.window_position();

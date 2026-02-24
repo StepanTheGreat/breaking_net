@@ -10,11 +10,11 @@ mod window;
 
 mod utils;
 
-pub use broadcast::*;
+pub use broadcast::{BroadcastListener, BroadcastWriter};
 pub use packet::Reliability;
-pub use socket::Socket;
+pub use socket::{Socket, SocketEvent};
 
-pub(crate) use utils::*;
+pub(crate) use utils::Timer;
 
 #[cfg(feature = "stress_testing")]
 pub use socket::{
