@@ -1,6 +1,6 @@
 //! Test basic socket interactions
 
-use breaking_net::*;
+use bnet::*;
 use std::net;
 
 const ADDR_A: net::SocketAddr = socket_addr!(localhost; 0);

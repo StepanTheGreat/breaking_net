@@ -47,7 +47,7 @@ pub(crate) static PROTOCOL_SIGNATURE: LazyLock<&'static str> = LazyLock::new(|| 
 ///
 /// # Example
 /// ```
-/// use breaking_net::socket_addr;
+/// use bnet::socket_addr;
 ///
 /// // Make a localhost V4 address at port 2555
 /// let addr = socket_addr!(127,0,0,1;2555);

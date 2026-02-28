@@ -2,7 +2,7 @@
 
 use std::net;
 
-use breaking_net::*;
+use bnet::*;
 
 const PORT: u16 = 5555;
 const LISTENER_ADDR: net::SocketAddr = socket_addr!(unspecified; PORT);

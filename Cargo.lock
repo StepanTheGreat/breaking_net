@@ -33,10 +33,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "breaking_net"
+name = "bnet"
 version = "0.4.0"
 dependencies = [
  "bitcode",
+ "bnet",
  "rand",
  "socket2",
 ]
