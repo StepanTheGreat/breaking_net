@@ -12,7 +12,7 @@ mod utils;
 
 pub use broadcast::{BroadcastListener, BroadcastWriter};
 pub use packet::Reliability;
-pub use socket::{Socket, SocketEvent};
+pub use socket::{Socket, SocketEvent, ReceivedMessage};
 
 pub(crate) use utils::Timer;
 

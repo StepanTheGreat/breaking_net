@@ -40,11 +40,17 @@ pub enum SocketEvent {
     Disconnection(net::SocketAddr),
 }
 
+/// A message received from another socket
 #[derive(Debug)]
 pub struct ReceivedMessage {
+    /// The payload of the message
     pub data: Vec<u8>,
-    pub reliability: Reliability,
+    
+    /// The sender behind this message
     pub sender: net::SocketAddr,
+
+    /// The reliability of the message
+    pub reliability: Reliability,
 }
 
 /// The reliable socket used for reliable communications.
