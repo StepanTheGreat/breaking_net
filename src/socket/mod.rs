@@ -45,7 +45,7 @@ pub enum SocketEvent {
 pub struct ReceivedMessage {
     /// The payload of the message
     pub data: Vec<u8>,
-    
+
     /// The sender behind this message
     pub sender: net::SocketAddr,
 

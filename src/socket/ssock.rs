@@ -214,10 +214,10 @@ impl SimpleSock {
 
     /// Receive a message from anyone
     pub fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)> {
-        
         let socket_read = {
             // Casting between &mut [u8] and &mut MaybeUninit<u8> here is safe. This mutable buffer reference is only valid within this single method call
-            let recv_buff = unsafe { &mut *(self.recv_buffer.as_mut() as *mut [u8] as *mut [MaybeUninit<u8>]) };
+            let recv_buff =
+                unsafe { &mut *(self.recv_buffer.as_mut() as *mut [u8] as *mut [MaybeUninit<u8>]) };
             self.socket.recv_from(recv_buff)
         };
 
