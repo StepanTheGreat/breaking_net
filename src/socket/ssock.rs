@@ -214,12 +214,14 @@ impl SimpleSock {
 
     /// Receive a message from anyone
     pub fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)> {
-        // Casting between MaybeUninit primitive types here is safe
-        let buff = unsafe {
-            std::mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(self.recv_buffer.as_mut())
+        
+        let socket_read = {
+            // Casting between &mut [u8] and &mut MaybeUninit<u8> here is safe. This mutable buffer reference is only valid within this single method call
+            let recv_buff = unsafe { &mut *(self.recv_buffer.as_mut() as *mut [u8] as *mut [MaybeUninit<u8>]) };
+            self.socket.recv_from(recv_buff)
         };
 
-        match self.socket.recv_from(buff) {
+        match socket_read {
             Ok((read, addr)) => {
                 // We received less bytes than our CRC signature
                 if read < CRC32_SIG_LEN {
@@ -229,19 +231,17 @@ impl SimpleSock {
                 // If we're stress testing and the message is supposed to be corrupted - we'll just reverse the received message
                 #[cfg(feature = "stress_testing")]
                 if should_corrupt_message() {
-                    buff[0..read].reverse();
+                    self.recv_buffer[0..read].reverse();
                 }
 
-                let crc_valid = crc32_verify(&self.recv_buffer[..read], Some(self.signature));
-
-                // Only return when signatures match
-                if crc_valid {
-                    let data_len = read - CRC32_SIG_LEN;
-
-                    Some((&self.recv_buffer[..data_len], addr.as_socket()?))
-                } else {
-                    None
+                // Signature mismatch, early return
+                if !crc32_verify(&self.recv_buffer[..read], Some(self.signature)) {
+                    return None;
                 }
+
+                // Read everything excluding the signature
+                let data_len = read - CRC32_SIG_LEN;
+                Some((&self.recv_buffer[..data_len], addr.as_socket()?))
             }
             Err(_) => None,
         }
