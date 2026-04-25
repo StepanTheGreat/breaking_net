@@ -21,7 +21,7 @@ pub use ssock::{
 
 use crate::{
     MTU_SIZE, MTU_SIZE_PRIVATE,
-    packet::{PacketCrate, PacketCrateBuilder, Reliability},
+    packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr,
 };
 
 use connection::SocketConnection;
@@ -53,11 +53,31 @@ pub struct ReceivedMessage {
     pub reliability: Reliability,
 }
 
+/// Socket customization settings which you can provide to extend default sockets
+#[derive(Debug, Clone, Copy)]
+pub struct SocketOptions {
+    /// Whether this socket can broadcast messages. Without this setting, sockets can't send any broadcast packets.
+    pub broadcaster: bool,
+
+    /// Whether the address of this socket can be reused by other sockets. This is primarily useful for broadcast listeners, so usually keep it on default
+    pub reuses_address: bool
+}
+
+impl Default for SocketOptions {
+    fn default() -> Self {
+        Self {
+            broadcaster: false,
+            reuses_address: false
+        }
+    }
+}
+
 /// The reliable socket used for reliable communications.
 ///
 /// Automatically handles connection management (except for heartbeats), reliable delivery and so on.
 pub struct Socket {
     socket: SimpleSock,
+    options: SocketOptions,
 
     packet_builder: PacketCrateBuilder,
     connections: HashMap<net::SocketAddr, SocketConnection>,
@@ -67,12 +87,16 @@ pub struct Socket {
 }
 
 impl Socket {
-    /// Create a new socket on the provided address
-    pub fn new(addr: net::SocketAddr) -> io::Result<Self> {
-        let socket = SimpleSock::new(addr, MTU_SIZE_PRIVATE)?;
+    /// Create a new socket on the provided address with extended configurations
+    pub fn new_ex(addr: net::SocketAddr, options: SocketOptions) -> io::Result<Self> {
+        let socket = SimpleSock::new_ex(addr, MTU_SIZE_PRIVATE, SockSettings { 
+            broadcaster: options.broadcaster, 
+            reuses_address: options.reuses_address 
+        })?;
 
         Ok(Self {
             socket,
+            options,
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
             connections: HashMap::new(),
@@ -80,6 +104,18 @@ impl Socket {
             event_queue: VecDeque::new(),
             message_queue: VecDeque::new(),
         })
+    }
+
+    /// Create a simple socket on the provided address with default configurations.
+    /// 
+    /// For extended configuration see [Socket::new_ex]
+    pub fn new(addr: net::SocketAddr) -> io::Result<Self> {
+        Self::new_ex(addr, SocketOptions::default())
+    }
+
+    /// Get a reference to the socket options used when creating the socket.
+    pub fn options(&self) -> &SocketOptions {
+        &self.options
     }
 
     /// Is this socket connected to the provided socket? Note that this information might be invalid without polling.
@@ -96,9 +132,9 @@ impl Socket {
     /// isn't for now mutual)
     ///
     /// # Panics
-    /// Will panic if the amount of bytes sent exceeds the [MTU_SIZE] limit
+    /// Panics if the amount of bytes sent exceeds the [MTU_SIZE] limit
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
-        assert!(data.len() <= MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
+        assert!(data.len() <= MTU_SIZE, "Reached the MTU limit of {MTU_SIZE}");
 
         self.connect(*to);
 
@@ -106,6 +142,18 @@ impl Socket {
             .get_mut(to)
             .unwrap()
             .queue_message(data.to_owned(), how);
+    }
+
+    /// Broadcast a message over the provided port. This operation doesn't establish any connection, is immediate, doesn't batch messages and 
+    /// is **always** unreliable. Essentially raw UDP.
+    /// 
+    /// # Panics
+    /// Panics if the amount of bytes sent exceeds the [MTU_SIZE] limit
+    pub fn broadcast(&mut self, port: u16, data: &[u8]) {
+        assert!(data.len() <= MTU_SIZE, "Reached the MTU limit of {MTU_SIZE}");
+        assert!(self.options.broadcaster, "Socket can't broadcast packets");
+
+        let _ = self.socket.send_to(data, socket_addr!(broadcast;port));
     }
 
     /// Receive and distribute (to connections) messages
@@ -138,7 +186,7 @@ impl Socket {
                 } else {
                     // In any other case we're just going to buffer it without a connection
                     self.message_queue.push_back(ReceivedMessage {
-                        sender: sender,
+                        sender,
                         reliability: message.reliability(),
                         data: message.consume_payload().unwrap(),
                     });
@@ -167,7 +215,7 @@ impl Socket {
             // If this connection has timed out - we're going to notify the user
             if connection.timed_out() {
                 self.event_queue
-                    .push_front(SocketEvent::Disconnection(connection.to_addr()));
+                    .push_back(SocketEvent::Disconnection(connection.to_addr()));
             }
         }
 
@@ -216,10 +264,31 @@ impl Socket {
     /// Note that if the other address doesn't send any messages whatsoever - this connection will close very quickly.
     pub fn connect(&mut self, addr: net::SocketAddr) {
         // If there's not yet connection
-        if !self.connections.contains_key(&addr) {
-            self.event_queue.push_front(SocketEvent::Connection(addr));
+        if !self.is_connected(&addr) {
+            self.event_queue.push_back(SocketEvent::Connection(addr));
             self.connections.insert(addr, SocketConnection::new(addr));
         }
+    }
+
+    /// Disconnect from the provided address. 
+    /// 
+    /// As with [Socket::connect], all this is doing is just removing a *logical* connection to the address.
+    /// Doesn't do anything it no connection was established.
+    pub fn disconnect(&mut self, addr: net::SocketAddr) {
+        if self.is_connected(&addr) {
+            self.event_queue.push_back(SocketEvent::Disconnection(addr));
+            let _ = self.connections.remove(&addr);
+        }
+    }
+
+    /// Clear the event queue. Super useful if you wish to ignore events
+    pub fn clear_events(&mut self) {
+        self.event_queue.clear();
+    }
+
+    /// Identical to [Socket::clear_events].
+    pub fn clear_messages(&mut self) {
+        self.message_queue.clear();
     }
 
     /// How many messages are available

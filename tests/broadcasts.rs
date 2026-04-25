@@ -12,8 +12,11 @@ fn make_listener() -> BroadcastListener {
     BroadcastListener::new(LISTENER_ADDR).unwrap()
 }
 
-fn make_writer() -> BroadcastWriter {
-    BroadcastWriter::new(WRITER_ADDR, PORT).unwrap()
+fn make_writer() -> Socket {
+    Socket::new_ex(
+        WRITER_ADDR, 
+        SocketOptions { broadcaster: true, ..Default::default() }
+    ).unwrap()
 }
 
 /// Test common broadcasting use-cases
@@ -30,7 +33,7 @@ fn test_broadcasts() {
     let data = [1, 2, 3, 4];
 
     // Send some data to all of them
-    writer.send(&data).unwrap();
+    writer.broadcast(PORT, &data);
 
     // Packets should be available now
     assert!(listener1.has_messages());

@@ -3,7 +3,7 @@ use std::io;
 use std::net;
 
 use crate::socket::{SimpleSock, SockSettings};
-use crate::{MTU_SIZE, MTU_SIZE_PRIVATE, socket_addr};
+use crate::MTU_SIZE_PRIVATE;
 
 /// A broadcast listener *listens* for broadcast packets.
 ///
@@ -45,61 +45,6 @@ impl BroadcastListener {
         self.socket
             .recv_from()
             .map(|(data, addr)| (data.to_vec(), addr))
-    }
-}
-
-/// A socket whose purpose is to specifically write broadcast messages.
-///
-/// This is a temporary API choice, and in the future will get replaced by allowing sockets to
-/// send broadcasts directly
-pub struct BroadcastWriter {
-    socket: SimpleSock,
-    broadcast_addr: net::SocketAddr,
-}
-
-impl BroadcastWriter {
-    /// Create a new broadcast writer for the provided address and port.
-    ///
-    /// The port will be used for dispatching broadcasts
-    pub fn new(socket_addr: net::SocketAddr, port: u16) -> io::Result<Self> {
-        // The address to which we're going to send messages
-        let broadcast_addr = socket_addr!(broadcast;port);
-
-        // The capacity is at zero, since we're not going to receive anything
-        let socket = SimpleSock::new_ex(
-            socket_addr,
-            MTU_SIZE_PRIVATE,
-            SockSettings {
-                broadcaster: true,
-                ..Default::default()
-            },
-        )?;
-
-        Ok(Self {
-            socket,
-            broadcast_addr,
-        })
-    }
-
-    /// Update the port of a broadcast writer
-    pub fn set_port(&mut self, new_port: u16) {
-        self.broadcast_addr = socket_addr!(255,255,255,255;new_port);
-    }
-
-    /// Send a broadcast message
-    ///
-    /// # Panics
-    /// This method will panic, if data contains more bytes than is permissible by [MTU_SIZE]
-    pub fn send(&mut self, data: &[u8]) -> Result<(), io::Error> {
-        assert!(data.len() < MTU_SIZE, "Reached an MTU limit of {MTU_SIZE}");
-
-        self.socket.send_to(data, self.broadcast_addr)
-    }
-}
-
-impl Debug for BroadcastWriter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<BroadcastWriter: {}>", self.broadcast_addr)
     }
 }
 

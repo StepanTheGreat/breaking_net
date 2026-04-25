@@ -10,9 +10,9 @@ mod window;
 
 mod utils;
 
-pub use broadcast::{BroadcastListener, BroadcastWriter};
+pub use broadcast::BroadcastListener;
 pub use packet::Reliability;
-pub use socket::{ReceivedMessage, Socket, SocketEvent};
+pub use socket::{ReceivedMessage, Socket, SocketEvent, SocketOptions};
 
 pub(crate) use utils::Timer;
 
