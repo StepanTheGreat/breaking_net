@@ -2,8 +2,8 @@ use std::fmt::Debug;
 use std::io;
 use std::net;
 
-use crate::socket::{SimpleSock, SockSettings};
 use crate::MTU_SIZE_PRIVATE;
+use crate::socket::{SimpleSock, SockSettings};
 
 /// A broadcast listener *listens* for broadcast packets.
 ///

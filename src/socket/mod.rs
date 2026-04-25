@@ -21,7 +21,8 @@ pub use ssock::{
 
 use crate::{
     MTU_SIZE, MTU_SIZE_PRIVATE,
-    packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr,
+    packet::{PacketCrate, PacketCrateBuilder, Reliability},
+    socket_addr,
 };
 
 use connection::SocketConnection;
@@ -60,14 +61,15 @@ pub struct SocketOptions {
     pub broadcaster: bool,
 
     /// Whether the address of this socket can be reused by other sockets. This is primarily useful for broadcast listeners, so usually keep it on default
-    pub reuses_address: bool
+    pub reuses_address: bool,
 }
 
+#[allow(clippy::derivable_impls, reason = "Keeping for explicitness")]
 impl Default for SocketOptions {
     fn default() -> Self {
         Self {
             broadcaster: false,
-            reuses_address: false
+            reuses_address: false,
         }
     }
 }
@@ -89,10 +91,14 @@ pub struct Socket {
 impl Socket {
     /// Create a new socket on the provided address with extended configurations
     pub fn new_ex(addr: net::SocketAddr, options: SocketOptions) -> io::Result<Self> {
-        let socket = SimpleSock::new_ex(addr, MTU_SIZE_PRIVATE, SockSettings { 
-            broadcaster: options.broadcaster, 
-            reuses_address: options.reuses_address 
-        })?;
+        let socket = SimpleSock::new_ex(
+            addr,
+            MTU_SIZE_PRIVATE,
+            SockSettings {
+                broadcaster: options.broadcaster,
+                reuses_address: options.reuses_address,
+            },
+        )?;
 
         Ok(Self {
             socket,
@@ -107,7 +113,7 @@ impl Socket {
     }
 
     /// Create a simple socket on the provided address with default configurations.
-    /// 
+    ///
     /// For extended configuration see [Socket::new_ex]
     pub fn new(addr: net::SocketAddr) -> io::Result<Self> {
         Self::new_ex(addr, SocketOptions::default())
@@ -134,7 +140,10 @@ impl Socket {
     /// # Panics
     /// Panics if the amount of bytes sent exceeds the [MTU_SIZE] limit
     pub fn send_to(&mut self, to: &net::SocketAddr, data: &[u8], how: Reliability) {
-        assert!(data.len() <= MTU_SIZE, "Reached the MTU limit of {MTU_SIZE}");
+        assert!(
+            data.len() <= MTU_SIZE,
+            "Reached the MTU limit of {MTU_SIZE}"
+        );
 
         self.connect(*to);
 
@@ -144,13 +153,17 @@ impl Socket {
             .queue_message(data.to_owned(), how);
     }
 
-    /// Broadcast a message over the provided port. This operation doesn't establish any connection, is immediate, doesn't batch messages and 
+    /// Broadcast a message over the provided port. This operation doesn't establish any connection, is immediate, doesn't batch messages and
     /// is **always** unreliable. Essentially raw UDP.
-    /// 
+    ///
     /// # Panics
-    /// Panics if the amount of bytes sent exceeds the [MTU_SIZE] limit
+    /// - If the socket isn't a broadcast socket (you create one with [Socket::new_ex])
+    /// - If the amount of bytes sent exceeds the [MTU_SIZE] limit
     pub fn broadcast(&mut self, port: u16, data: &[u8]) {
-        assert!(data.len() <= MTU_SIZE, "Reached the MTU limit of {MTU_SIZE}");
+        assert!(
+            data.len() <= MTU_SIZE,
+            "Reached the MTU limit of {MTU_SIZE}"
+        );
         assert!(self.options.broadcaster, "Socket can't broadcast packets");
 
         let _ = self.socket.send_to(data, socket_addr!(broadcast;port));
@@ -270,8 +283,8 @@ impl Socket {
         }
     }
 
-    /// Disconnect from the provided address. 
-    /// 
+    /// Disconnect from the provided address.
+    ///
     /// As with [Socket::connect], all this is doing is just removing a *logical* connection to the address.
     /// Doesn't do anything it no connection was established.
     pub fn disconnect(&mut self, addr: net::SocketAddr) {

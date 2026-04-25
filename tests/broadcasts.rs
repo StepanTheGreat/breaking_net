@@ -14,9 +14,13 @@ fn make_listener() -> BroadcastListener {
 
 fn make_writer() -> Socket {
     Socket::new_ex(
-        WRITER_ADDR, 
-        SocketOptions { broadcaster: true, ..Default::default() }
-    ).unwrap()
+        WRITER_ADDR,
+        SocketOptions {
+            broadcaster: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
 }
 
 /// Test common broadcasting use-cases
