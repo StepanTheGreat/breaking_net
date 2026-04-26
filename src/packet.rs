@@ -120,11 +120,11 @@ pub struct PacketCrate {
     /// The sequence ID of this packet
     pub seq_id: PacketSeqId,
 
-    /// The base of the message window
-    pub msg_base: MessageId,
+    /// The base of the packet window
+    pub packet_base: MessageId,
 
-    /// The bitmap of the message window
-    pub msg_map: MessageAckMap,
+    /// The bitmap of the packet window
+    pub packet_map: MessageAckMap,
 
     /// A container of messages grouped under a single packet
     pub messages: Vec<UserMessage>,
@@ -135,7 +135,7 @@ pub struct PacketCrate {
 /// Its main purpose is to batch messages into larger packets (when possible)
 pub struct PacketCrateBuilder {
     /// Acknowledgments to pack. Why are we using an option here? To safely work around the borrowchecker
-    msg_acknowledgments: Option<(MessageId, MessageAckMap)>,
+    packet_acknowledgments: Option<(PacketSeqId, PacketAckMap)>,
 
     /// User messages to pack
     user_messages: Option<Vec<UserMessage>>,
@@ -159,13 +159,13 @@ impl PacketCrateBuilder {
     /// - Acknowledgment map (4)
     /// - Length of user messages (4)
     const INIT_SIZE: usize = size_of::<PacketSeqId>()
-        + size_of::<MessageId>()
-        + size_of::<MessageAckMap>()
+        + size_of::<PacketSeqId>()
+        + size_of::<PacketAckMap>()
         + size_of::<u32>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
-            msg_acknowledgments: None,
+            packet_acknowledgments: None,
             packet_seq_id: None,
             user_messages: Some(Vec::new()),
 
@@ -190,8 +190,8 @@ impl PacketCrateBuilder {
         self.packet_seq_id = Some(seq_id);
     }
 
-    pub fn put_message_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
-        self.msg_acknowledgments = Some((base, map));
+    pub fn put_packet_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
+        self.packet_acknowledgments = Some((base, map));
     }
 
     pub fn put_user_message(&mut self, packet: UserMessage) {
@@ -204,7 +204,7 @@ impl PacketCrateBuilder {
 
     /// Clear this packet crate for reusability
     pub fn clear(&mut self) {
-        self.msg_acknowledgments = None;
+        self.packet_acknowledgments = None;
         self.packet_seq_id = None;
         self.user_messages.as_mut().unwrap().clear();
 
@@ -213,20 +213,20 @@ impl PacketCrateBuilder {
 
     /// A packet crate packer is empty if it doesn't contain any acknowledgments or user messages
     pub fn is_empty(&self) -> bool {
-        self.msg_acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
+        self.packet_acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
     }
 
     /// Build this crate and get the slice of the serialized crate packet
     pub fn build(&mut self) -> &[u8] {
         // First of all, create our packet crate
 
-        let (msg_base, msg_map) = self.msg_acknowledgments.unwrap_or((0, 0));
+        let (packet_base, packet_map) = self.packet_acknowledgments.unwrap_or((0, 0));
         let seq_id = self.packet_seq_id.expect("No packet ID was supplied");
 
         let pcrate = PacketCrate {
             seq_id,
-            msg_base,
-            msg_map,
+            packet_base,
+            packet_map,
             messages: self.user_messages.take().unwrap(),
         };
 
@@ -243,7 +243,7 @@ impl PacketCrateBuilder {
 
         // Reset the size of our builder
         self.size = Self::INIT_SIZE;
-        self.msg_acknowledgments = None;
+        self.packet_acknowledgments = None;
         self.packet_seq_id = None;
 
         // Return the serialized slice
@@ -256,7 +256,7 @@ impl PacketCrateBuilder {
 /// It will return the base sequence ID from which to acknowledge packets and the map itself.
 ///
 /// The base ID is included in the map
-pub fn build_ack_map(window: &SlidingAckWindow) -> (MessageId, MessageAckMap) {
+pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
     let base = window.window_position();
 
     // Initialise the map
@@ -266,7 +266,7 @@ pub fn build_ack_map(window: &SlidingAckWindow) -> (MessageId, MessageAckMap) {
     let mut cursor = (PacketAckMap::BITS - 1) << 1;
 
     // For each bit
-    for i in 0..MessageAckMap::BITS {
+    for i in 0..PacketAckMap::BITS {
         // If it's marked - put it on the map as well
         if window.is_marked(base + i) {
             map |= cursor;

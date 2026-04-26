@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{array, time::Duration};
 
 /// A utility polling macro (you can specify by how much to poll, how many times and which sockets)
 #[macro_export]

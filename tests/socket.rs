@@ -321,7 +321,6 @@ fn test_heartbeat() {
 
 /// Test a continous message dialogue
 #[test]
-#[ignore = "RTT not yet implemented"]
 fn test_round_trip_time() {
     reset_stress_environment();
 
@@ -349,6 +348,7 @@ fn test_round_trip_time() {
     // Receive the message
     sock_b.recv_from().unwrap();
 
-    // The round trip time must be larger than 0
-    // assert!(sock_a.round_trip_time(sock_b.addr()).unwrap() > 0.0);
+    // The round trip time must be larger than DT
+    let rtt = sock_a.rtt_for(&sock_b.addr()).unwrap();
+    assert!(rtt > DT.as_secs_f64());
 }

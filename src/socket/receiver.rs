@@ -1,5 +1,5 @@
 use crate::{
-    packet::UserMessage, socket::channels::{Channel, ChannelStorage}, window::SlidingAckWindow
+    packet::{PacketSeqId, UserMessage}, socket::channels::{Channel, ChannelStorage}, window::SlidingAckWindow
 };
 
 pub struct ReceiveManager {
@@ -50,9 +50,13 @@ impl ReceiveManager {
         }
     }
 
-    /// Get the window of messages that we were able to receive
-    pub fn received_messages(&self) -> &SlidingAckWindow {
-        &self.recv_message_window
+    pub fn mark_received_packet_id(&mut self, packet: PacketSeqId) {
+        self.recv_packet_window.mark(packet);
+    }
+
+    /// Get the window of packets that we were able to receive
+    pub fn received_packets(&self) -> &SlidingAckWindow {
+        &self.recv_packet_window
     }
 
     /// Try receive a message from all our channels

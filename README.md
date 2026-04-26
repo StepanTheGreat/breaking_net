@@ -59,15 +59,15 @@ assert!(sock_b.is_connected(&addr_a));
 - [x] Heartbeat management
 - [x] Socket events (instead of simply packets)
 - [x] Better time management
+- [x] QUIC-like acknowledgment
 - [ ] Fragmentation
 - [ ] Congestion control + RTT
 - [ ] Basic DoS prevention
 - [ ] Encryption + Handshake (probably using `snow`)
 - [ ] Socket customization (custom PPS, MTU limits, ...)
 - [ ] Better connection management (via UIDs, better reconnection)
-- [ ] QUIC-like acknowledgment 
 - [ ] Better stress testing
-- [ ] Benchmarking 
+- [ ] Benchmarking (performance + memory consumption)
 - [ ] C ABI 
 
 ## Testing

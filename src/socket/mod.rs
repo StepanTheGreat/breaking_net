@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
-    io, net,
+    io, net::{self, SocketAddr},
     time::Duration,
 };
 
@@ -184,8 +184,10 @@ impl Socket {
 
             // If this is a message from a known connection
             if let Some(conn) = connection.as_mut() {
+                conn.mark_received_packet_id(pcrate.seq_id);
+
                 // let it mark all the acknowledgments it needs
-                conn.sent_message_acknowledgments_received(pcrate.msg_base, pcrate.msg_map);
+                conn.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map);
 
                 // and reset its hearbeat timer as well
                 conn.reset_heartbeat_timer();
@@ -303,6 +305,12 @@ impl Socket {
     /// How many messages are available
     pub fn messages(&self) -> usize {
         self.message_queue.len()
+    }
+
+    /// Retrieve Round Trip Time for the provided connection (if one exists)
+    pub fn rtt_for(&self, addr: &SocketAddr) -> Option<f64> {
+        self.connections.get(addr)
+            .map(|c| c.rtt())
     }
 }
 

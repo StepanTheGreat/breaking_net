@@ -2,7 +2,7 @@ use std::{net, time::Duration};
 
 use crate::{
     Reliability,
-    packet::{MessageAckMap, MessageId, PacketCrateBuilder, UserMessage},
+    packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
     socket::{
         SimpleSock,
         receiver::ReceiveManager,
@@ -46,26 +46,26 @@ impl SocketConnection {
     }
 
     /// Acknowledgments for our messages have been received on this connection
-    pub fn sent_message_acknowledgments_received(
+    pub fn sent_packet_acknowledgments_received(
         &mut self,
-        msg_base: MessageId,
-        msg_map: MessageAckMap,
+        packet_base: PacketSeqId,
+        packet_map: PacketAckMap,
     ) {
         // No acknowledgments
-        if msg_base == 0 && msg_map == 0 {
+        if packet_base == 0 && packet_map == 0 {
             return;
         }
 
-        self.sender.set_send_message_received_base(msg_base);
+        self.sender.set_sent_packet_received_base(packet_base);
 
         // Init the cursor
         let mut cursor = 1 << (MessageAckMap::BITS - 1);
 
         // For each bit
         for bind in 0..MessageAckMap::BITS {
-            if (msg_map & cursor) > 0 {
-                let msg_id = msg_base + bind;
-                self.sender.mark_sent_message_received(msg_id);
+            if (packet_map & cursor) > 0 {
+                let packet_id = packet_base + bind;
+                self.sender.mark_sent_packet_received(packet_id);
             }
 
             // Move the cursor to the right
@@ -87,10 +87,15 @@ impl SocketConnection {
             SendContext {
                 socket: socket,
                 packet_builder: crate_builder,
-                recv_packet_window: self.receiver.received_messages(),
+                recv_packet_window: self.receiver.received_packets(),
             },
             self.time,
         );
+    }
+
+    /// Mark this recipient's sent packet as received 
+    pub fn mark_received_packet_id(&mut self, packet: PacketSeqId) {
+        self.receiver.mark_received_packet_id(packet);
     }
 
     /// Process the provided message (by filtering it out)
@@ -115,5 +120,9 @@ impl SocketConnection {
     /// Check if this connection has timed out (no packets received)
     pub fn timed_out(&self) -> bool {
         self.last_hearbeat <= self.time
+    }
+
+    pub fn rtt(&self) -> f64 {
+        self.sender.rtt()
     }
 }
