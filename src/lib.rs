@@ -61,6 +61,22 @@ pub(crate) static PROTOCOL_SIGNATURE: LazyLock<&'static str> = LazyLock::new(|| 
 /// // And unspecified (0.0.0.0)
 /// let addr4 = socket_addr!(unspecified;2555);
 /// ```
+/// 
+/// # Note
+/// Rust's standard library already provides trait implementations that do the same with tuples or strings:
+/// ```
+/// use std::net::{SocketAddr, Ipv4Addr};
+/// use bnet::socket_addr;
+/// 
+/// let a: SocketAddr = (Ipv4Addr::LOCALHOST, 5000).into();
+/// let b: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+/// 
+/// // This macro is mostly useful for constants
+/// let c = socket_addr!(localhost; 5000);
+/// 
+/// assert_eq!(a, b);
+/// assert_eq!(b, c);
+/// ``` 
 #[macro_export]
 macro_rules! socket_addr {
     ($a:expr, $b:expr, $c:expr, $d:expr; $port:expr) => {

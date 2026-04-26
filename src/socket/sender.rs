@@ -1,5 +1,5 @@
 use core::net;
-use std::{collections::VecDeque, rc::Rc};
+use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
     Reliability, Timer,
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Resend 10 times per second
-const RESEND_TIMER: f32 = 1.0 / 10.0;
+const RESEND_TIMER: Duration = Duration::from_millis(100);
 
 /// The context neccessary to poll a [SendManager]
 pub struct SendContext<'a> {
@@ -42,7 +42,7 @@ struct QueuedMessage {
 }
 
 impl QueuedMessage {
-    fn new_reliable(message: UserMessage, time: f32) -> Self {
+    fn new_reliable(message: UserMessage, time: Duration) -> Self {
         Self {
             message,
             timer: Some(Timer::new(time)),
@@ -56,7 +56,7 @@ impl QueuedMessage {
         }
     }
 
-    fn tick(&mut self, dt: f32) {
+    fn tick(&mut self, dt: Duration) {
         if let Some(timer) = self.timer.as_mut() {
             timer.tick(dt);
         }
@@ -82,7 +82,7 @@ impl QueuedMessage {
     }
 
     /// Update this message's timer
-    fn set_timer(&mut self, new_time: f32) {
+    fn set_timer(&mut self, new_time: Duration) {
         if let Some(timer) = self.timer.as_mut() {
             timer.set_time(new_time);
         }
@@ -143,7 +143,7 @@ impl SendManager {
                 };
 
                 // Insert a new message that must be dispatched ASAP
-                QueuedMessage::new_reliable(message, 0.0)
+                QueuedMessage::new_reliable(message, Duration::ZERO)
             }
 
             // Unreliable however don't get themselves anything
@@ -156,7 +156,7 @@ impl SendManager {
     }
 
     /// Update messages while also collecting them into a queue at the same time
-    fn update_collect_candidates(&mut self, dt: f32, candidates: &mut VecDeque<QueuedMessage>) {
+    fn update_collect_candidates(&mut self, dt: Duration, candidates: &mut VecDeque<QueuedMessage>) {
         // We're going to go from back to front
         for ind in (0..self.message_queue.len()).rev() {
             // First we're going to update it
@@ -201,7 +201,7 @@ impl SendManager {
         socket: &mut SimpleSock,
         crate_builder: &mut PacketCrateBuilder,
         recv_message_window: &SlidingAckWindow,
-        dt: f32,
+        dt: Duration,
     ) {
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
         self.update_collect_candidates(dt, &mut candidates);
@@ -210,7 +210,7 @@ impl SendManager {
 
         // How many packets can we even send?
         let mut available_packets = (
-            self.packets_per_second as f32 * dt.clamp(0.0, 1.0)
+            self.packets_per_second as f32 * dt.as_secs_f32().min(1.0)
             // No matter the delta here, we're not going to send more than our PPS in a single second
         ) as usize;
 
@@ -301,7 +301,7 @@ impl SendManager {
     }
 
     /// Poll the send manager (this will send all the queued messages)
-    pub fn poll(&mut self, ctx: SendContext, dt: f32) {
+    pub fn poll(&mut self, ctx: SendContext, dt: Duration) {
         self.cleanup_received_messages();
         self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
     }

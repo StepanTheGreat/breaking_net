@@ -1,13 +1,14 @@
 //! Test basic socket interactions
 
 use bnet::*;
-use std::net;
+use std::{net, time::Duration};
 
 const ADDR_A: net::SocketAddr = socket_addr!(localhost; 0);
 const ADDR_B: net::SocketAddr = socket_addr!(localhost; 0);
 // const ADDR_C: net::SocketAddr = socket_addr!(localhost; 0);
 
-const DT: f32 = 1.0 / 30.0;
+// 30 times per second
+const DT: Duration = Duration::from_millis(33);
 
 #[test]
 fn test_basic_sockets() {
@@ -302,7 +303,7 @@ fn test_heartbeat() {
     assert!(sock_b.is_connected(&sock_a.addr()));
 
     // Poll them for 10 while seconds (more than enough to time out)
-    poll_socks!(10.0, [sock_a, sock_b]);
+    poll_socks!(Duration::from_secs(10), [sock_a, sock_b]);
 
     // They should be no longer corrected
     assert!(!sock_a.is_connected(&sock_b.addr()));

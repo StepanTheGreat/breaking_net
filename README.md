@@ -12,11 +12,12 @@ You can read the roadmap below to get a sense of what this crate is supposed to 
 
 ## Example
 ```rust
-use bnet::{Socket, Reliability, socket_addr};
+use std::time::Duration;
+use bnet::{Socket, Reliability};
 
 // Our ports here are constant. You can easily get an OS assigned one by using `0` instead 
-let addr_a = socket_addr!(localhost; 7878);
-let addr_b = socket_addr!(localhost; 8787);
+let addr_a = "127.0.0.1:7878".parse().unwrap();
+let addr_b = "127.0.0.1:8787".parse().unwrap();
 
 // Create AND bind our sockets to these addresses
 let mut sock_a = Socket::new(addr_a).unwrap();
@@ -27,8 +28,8 @@ let msg = b"hello";
 sock_a.send_to(&addr_b, msg, Reliability::Unreliable);
 
 // Poll both of them by 33 milliseconds (so A could send a message, and B could received it)
-sock_a.poll(0.033);
-sock_b.poll(0.033);
+sock_a.poll(Duration::from_millis(33));
+sock_b.poll(Duration::from_millis(33));
 
 // Receive the message and test its contents
 let received = sock_b.recv_from().unwrap();
@@ -40,8 +41,8 @@ assert_eq!(received.sender, addr_a);
 sock_b.send_to(&addr_a, msg, Reliability::Unreliable);
 
 // Poll again, in reversed order
-sock_b.poll(0.033);
-sock_a.poll(0.033);
+sock_b.poll(Duration::from_millis(33));
+sock_a.poll(Duration::from_millis(33));
 
 // Both now should be connected to each other
 assert!(sock_a.is_connected(&addr_b));
@@ -57,7 +58,7 @@ assert!(sock_b.is_connected(&addr_a));
 - [x] Protocol versioning
 - [x] Heartbeat management
 - [x] Socket events (instead of simply packets)
-- [ ] Better time management
+- [x] Better time management
 - [ ] Fragmentation
 - [ ] Congestion control + RTT
 - [ ] Basic DoS prevention

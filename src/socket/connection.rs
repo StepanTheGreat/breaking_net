@@ -1,4 +1,4 @@
-use std::net;
+use std::{net, time::Duration};
 
 use crate::{
     Reliability, Timer,
@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// After how many seconds to time out without receiving any packets
-const MAX_HEARBEAT_TIME: f32 = 5.0;
+const MAX_HEARBEAT_TIME: Duration = Duration::from_millis(5_000);
 
 pub struct SocketConnection {
     /// The connection is directed to
@@ -73,7 +73,7 @@ impl SocketConnection {
         &mut self,
         socket: &mut SimpleSock,
         crate_builder: &mut PacketCrateBuilder,
-        dt: f32,
+        dt: Duration,
     ) {
         // Tick our heartbeat timer
         self.last_hearbeat.tick(dt);

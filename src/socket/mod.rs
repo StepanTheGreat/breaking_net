@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
-    io, net,
+    io, net, time::Duration,
 };
 
 mod channels;
@@ -209,7 +209,7 @@ impl Socket {
     }
 
     /// Poll all our connections and receive their messages
-    fn poll_connections(&mut self, dt: f32) {
+    fn poll_connections(&mut self, dt: Duration) {
         for (_, connection) in self.connections.iter_mut() {
             connection.poll(&mut self.socket, &mut self.packet_builder, dt);
 
@@ -238,11 +238,7 @@ impl Socket {
     }
 
     /// Poll this socket thus updating its inner receive buffer and sending data.
-    ///
-    /// # Panics
-    /// This will panic if delta is negative. It doesn't make any sense.
-    pub fn poll(&mut self, dt: f32) {
-        assert!(dt >= 0.0, "Delta time must be positive or zero");
+    pub fn poll(&mut self, dt: Duration) {
 
         // We're going to collect all messages received by this socket
         self.receive_messages();
