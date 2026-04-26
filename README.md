@@ -57,13 +57,16 @@ assert!(sock_b.is_connected(&addr_a));
 - [x] Protocol versioning
 - [x] Heartbeat management
 - [x] Socket events (instead of simply packets)
-- [ ] Fixed tickrate
+- [ ] Better time management
 - [ ] Fragmentation
 - [ ] Congestion control + RTT
 - [ ] Basic DoS prevention
-- [ ] Encryption + Handshake (probably using `snow`) 
+- [ ] Encryption + Handshake (probably using `snow`)
 - [ ] Socket customization (custom PPS, MTU limits, ...)
+- [ ] Better connection management (via UIDs, better reconnection)
 - [ ] QUIC-like acknowledgment 
+- [ ] Better stress testing
+- [ ] Benchmarking 
 - [ ] C ABI 
 
 ## Testing
