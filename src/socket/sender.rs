@@ -156,7 +156,11 @@ impl SendManager {
     }
 
     /// Update messages while also collecting them into a queue at the same time
-    fn update_collect_candidates(&mut self, dt: Duration, candidates: &mut VecDeque<QueuedMessage>) {
+    fn update_collect_candidates(
+        &mut self,
+        dt: Duration,
+        candidates: &mut VecDeque<QueuedMessage>,
+    ) {
         // We're going to go from back to front
         for ind in (0..self.message_queue.len()).rev() {
             // First we're going to update it

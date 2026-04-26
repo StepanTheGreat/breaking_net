@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
-    io, net, time::Duration,
+    io, net,
+    time::Duration,
 };
 
 mod channels;
@@ -239,7 +240,6 @@ impl Socket {
 
     /// Poll this socket thus updating its inner receive buffer and sending data.
     pub fn poll(&mut self, dt: Duration) {
-
         // We're going to collect all messages received by this socket
         self.receive_messages();
 
