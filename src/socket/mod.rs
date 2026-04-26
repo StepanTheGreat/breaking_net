@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
-    io, net::{self, SocketAddr},
+    io,
+    net::{self, SocketAddr},
     time::Duration,
 };
 
@@ -309,8 +310,7 @@ impl Socket {
 
     /// Retrieve Round Trip Time for the provided connection (if one exists)
     pub fn rtt_for(&self, addr: &SocketAddr) -> Option<f64> {
-        self.connections.get(addr)
-            .map(|c| c.rtt())
+        self.connections.get(addr).map(|c| c.rtt())
     }
 }
 

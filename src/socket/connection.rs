@@ -23,7 +23,7 @@ pub struct SocketConnection {
 
     last_hearbeat: Duration,
 
-    time: Duration
+    time: Duration,
 }
 
 impl SocketConnection {
@@ -37,12 +37,12 @@ impl SocketConnection {
             sender,
             receiver,
             time,
-            last_hearbeat: time+HEARBEAT_TIMEOUT,
+            last_hearbeat: time + HEARBEAT_TIMEOUT,
         }
     }
 
     pub fn reset_heartbeat_timer(&mut self) {
-        self.last_hearbeat = self.time+HEARBEAT_TIMEOUT;
+        self.last_hearbeat = self.time + HEARBEAT_TIMEOUT;
     }
 
     /// Acknowledgments for our messages have been received on this connection
@@ -93,7 +93,7 @@ impl SocketConnection {
         );
     }
 
-    /// Mark this recipient's sent packet as received 
+    /// Mark this recipient's sent packet as received
     pub fn mark_received_packet_id(&mut self, packet: PacketSeqId) {
         self.receiver.mark_received_packet_id(packet);
     }
