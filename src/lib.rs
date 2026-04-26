@@ -14,8 +14,6 @@ pub use broadcast::BroadcastListener;
 pub use packet::Reliability;
 pub use socket::{ReceivedMessage, Socket, SocketEvent, SocketOptions};
 
-pub(crate) use utils::Timer;
-
 #[cfg(feature = "stress_testing")]
 pub use socket::{
     reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,

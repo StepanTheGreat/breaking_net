@@ -1,15 +1,122 @@
 use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
+use arrayvec::ArrayVec;
+
 use crate::{
-    Reliability, Timer,
-    packet::{MessageId, PacketCrateBuilder, UserMessage, build_ack_map},
+    Reliability,
+    packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
     socket::ssock::SimpleSock,
     window::SlidingAckWindow,
 };
 
 /// Resend 10 times per second
 const RESEND_TIMER: Duration = Duration::from_millis(100);
+
+/// After what amount of time to forcefully slide the window (even)
+const WINDOW_FORCE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// A single packet entry
+pub struct PacketEntry {
+    pub timestamp: Duration,
+    pub messages: ArrayVec<MessageId, 4>
+}
+
+struct PacketWindow {
+    /// A queue of packets
+    queue: VecDeque<Option<PacketEntry>>,
+    
+    /// The current position of the window. The top packet in the queue has this ID
+    pos: PacketSeqId,
+
+    /// This timer gets resent on every new marked packet
+    force_slide_time: Duration,
+
+    time: Duration
+}
+
+impl PacketWindow {
+    /// Create a new window at position 0
+    fn new(time: Duration, capacity: usize) -> Self {
+        Self {
+            queue: VecDeque::with_capacity(capacity),
+            pos: 0,
+            time,
+            force_slide_time: time+WINDOW_FORCE_TIMEOUT
+        }
+    }
+
+    fn next_pid(&self) -> PacketSeqId {
+        self.pos + self.queue.len() as PacketSeqId
+    }
+
+    /// Try map a packet ID to its index in the window
+    /// 
+    /// None means that the id is unreachable (too old or recent)
+    fn pid_to_ind(&self, id: PacketSeqId) -> Option<usize> {
+
+        // If ID is too old OR its outside our window - return None
+        if id < self.pos || id >= self.next_pid() {
+            None
+        } else {
+            Some((id - self.pos) as usize)
+        }
+    }
+
+    /// Push a new packet onto the window. 
+    /// 
+    /// # Panics
+    /// If the id was unexpected. All packet entries must match their sequential IDs
+    pub fn push_sent(&mut self, id: PacketSeqId, entry: PacketEntry) {
+        assert_eq!(self.next_pid(), id, "Unexpected packet ID");
+
+        self.queue.push_back(Some(entry));
+    }
+
+    fn slide(&mut self) {
+
+
+        // While the queue is not empty and the first packet is None
+        while !self.queue.is_empty() && self.queue[0].is_none() {
+
+            // Pop it
+            let _ = self.queue.pop_front();
+
+            // Reset our timer
+            self.force_slide_time = self.time+WINDOW_FORCE_TIMEOUT;
+        }
+    }
+
+    /// Try retrieve and mark the provided packet ID as received.
+    /// 
+    /// This will remove it from the window and slide it.
+    /// 
+    /// It will return [None] if the packet is out of reach or was already taken
+    pub fn mark_sent(&mut self, id: PacketSeqId) -> Option<PacketEntry> {
+        let ind = self.pid_to_ind(id)?;
+
+        let packet = self.queue[ind].take();
+        self.slide();
+
+        packet
+    }
+
+    /// Update this packet window and forcibly push it when a packet isn't received in time
+    pub fn update(&mut self, time: Duration) {
+        self.time = time;
+
+        if self.queue.is_empty() {
+            return;
+        }
+
+        if self.force_slide_time <= self.time {
+
+            // Forcibly slide
+            let _ = self.queue[0].take();
+            self.slide();
+        }
+    }
+}
 
 /// The context neccessary to poll a [SendManager]
 pub struct SendContext<'a> {
@@ -38,35 +145,29 @@ impl SequenceCounter {
 #[derive(Clone)]
 struct QueuedMessage {
     message: UserMessage,
-    timer: Option<Timer>,
+    send_time: Option<Duration>,
 }
 
 impl QueuedMessage {
-    fn new_reliable(message: UserMessage, time: Duration) -> Self {
+    fn new_reliable(message: UserMessage, send_time: Duration) -> Self {
         Self {
             message,
-            timer: Some(Timer::new(time)),
+            send_time: Some(send_time),
         }
     }
 
     fn new_unreliable(message: UserMessage) -> Self {
         Self {
             message,
-            timer: None,
-        }
-    }
-
-    fn tick(&mut self, dt: Duration) {
-        if let Some(timer) = self.timer.as_mut() {
-            timer.tick(dt);
+            send_time: None,
         }
     }
 
     /// Is this queued message ready?
     ///
-    /// Unreliable messages are always ready. Reliable however, are only ready whenever their timer hits zero
-    fn is_ready(&self) -> bool {
-        self.timer.map(|timer| timer.timed_out()).unwrap_or(true)
+    /// Unreliable messages are always ready. Reliable however, are only ready based on the current time
+    fn is_ready(&self, time: Duration) -> bool {
+        self.send_time.map(|send_time| send_time <= time ).unwrap_or(true)
     }
 
     fn size(&self) -> usize {
@@ -81,10 +182,10 @@ impl QueuedMessage {
         self.message
     }
 
-    /// Update this message's timer
-    fn set_timer(&mut self, new_time: Duration) {
-        if let Some(timer) = self.timer.as_mut() {
-            timer.set_time(new_time);
+    /// Update this message's send time
+    fn set_send_time(&mut self, new_time: Duration) {
+        if let Some(send_time) = self.send_time.as_mut() {
+            *send_time = new_time;
         }
     }
 }
@@ -110,10 +211,20 @@ pub struct SendManager {
     /// This tracks which messages the other side has received. This is particularly useful for knowing which messages to stop resending.
     /// Another utility - it allows us to know if a reliable message can even be sent (because we have a limited window capacity)
     send_message_window: SlidingAckWindow,
+
+    /// Sliding window for our packets
+    /// 
+    /// Helps us tell which packets we sent were received by the other socket. Specifically, it lets us:
+    /// - Measure how much time it took to send a packet (RTT)
+    /// - Which messages associated with each packet were received (much more efficient than message ID tracking)
+    send_packet_window: PacketWindow,
+
+    /// Time should be managed differently
+    time: Duration
 }
 
 impl SendManager {
-    pub fn new(to: net::SocketAddr, packets_per_second: usize) -> Self {
+    pub fn new(time: Duration, to: net::SocketAddr, packets_per_second: usize) -> Self {
         Self {
             to,
             packets_per_second,
@@ -121,6 +232,8 @@ impl SendManager {
             message_counter: SequenceCounter::new(),
             message_queue: VecDeque::new(),
             send_message_window: SlidingAckWindow::new(64),
+            send_packet_window: PacketWindow::new(time, 64),
+            time
         }
     }
 
@@ -158,19 +271,15 @@ impl SendManager {
     /// Update messages while also collecting them into a queue at the same time
     fn update_collect_candidates(
         &mut self,
-        dt: Duration,
         candidates: &mut VecDeque<QueuedMessage>,
     ) {
         // We're going to go from back to front
         for ind in (0..self.message_queue.len()).rev() {
-            // First we're going to update it
-            self.message_queue[ind].tick(dt);
-
             // Then clone it
             let message = self.message_queue[ind].clone();
 
             // If the message is ready
-            if message.is_ready() {
+            if message.is_ready(self.time) {
                 // Make sure to only remove unreliable messages
                 if message.message_id().is_none() {
                     self.message_queue.remove(ind);
@@ -205,10 +314,10 @@ impl SendManager {
         socket: &mut SimpleSock,
         crate_builder: &mut PacketCrateBuilder,
         recv_message_window: &SlidingAckWindow,
-        dt: Duration,
+        dt: Duration
     ) {
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
-        self.update_collect_candidates(dt, &mut candidates);
+        self.update_collect_candidates(&mut candidates);
 
         let mut cant_fit_stack = Vec::new();
 
@@ -231,8 +340,10 @@ impl SendManager {
             // Put our acknowledgments
             crate_builder.put_message_acknowledgments(ack_base, ack_map);
 
+            let packet_id = self.packet_counter.next();
+
             // Get a new packet ID
-            crate_builder.set_packet_id(self.packet_counter.next());
+            crate_builder.set_packet_id(packet_id);
 
             // While the candidate list is not empty
             while !candidates.is_empty() {
@@ -248,7 +359,7 @@ impl SendManager {
                             .iter_mut()
                             .find(|p| matches!(p.message_id(), Some(id) if id == message_id))
                             .unwrap()
-                            .set_timer(RESEND_TIMER);
+                            .set_send_time(self.time+RESEND_TIMER);
                     }
 
                     // Consume and push it
@@ -305,7 +416,12 @@ impl SendManager {
     }
 
     /// Poll the send manager (this will send all the queued messages)
-    pub fn poll(&mut self, ctx: SendContext, dt: Duration) {
+    pub fn poll(&mut self, ctx: SendContext, time: Duration) {
+        
+        // Compute delta (important for PPS calculation)
+        let dt = time.saturating_sub(self.time);
+        self.time = time;
+
         self.cleanup_received_messages();
         self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
     }

@@ -1,7 +1,7 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability, Timer,
+    Reliability,
     packet::{MessageAckMap, MessageId, PacketCrateBuilder, UserMessage},
     socket::{
         SimpleSock,
@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// After how many seconds to time out without receiving any packets
-const MAX_HEARBEAT_TIME: Duration = Duration::from_millis(5_000);
+const HEARBEAT_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 pub struct SocketConnection {
     /// The connection is directed to
@@ -21,24 +21,28 @@ pub struct SocketConnection {
 
     receiver: ReceiveManager,
 
-    last_hearbeat: Timer,
+    last_hearbeat: Duration,
+
+    time: Duration
 }
 
 impl SocketConnection {
     pub fn new(to: net::SocketAddr) -> Self {
-        let sender = SendManager::new(to, 100);
+        let time = Duration::ZERO;
+        let sender = SendManager::new(time, to, 100);
         let receiver = ReceiveManager::new();
 
         Self {
             to,
             sender,
             receiver,
-            last_hearbeat: Timer::new(MAX_HEARBEAT_TIME),
+            time,
+            last_hearbeat: time+HEARBEAT_TIMEOUT,
         }
     }
 
     pub fn reset_heartbeat_timer(&mut self) {
-        self.last_hearbeat.set_time(MAX_HEARBEAT_TIME);
+        self.last_hearbeat = self.time+HEARBEAT_TIMEOUT;
     }
 
     /// Acknowledgments for our messages have been received on this connection
@@ -75,8 +79,8 @@ impl SocketConnection {
         crate_builder: &mut PacketCrateBuilder,
         dt: Duration,
     ) {
-        // Tick our heartbeat timer
-        self.last_hearbeat.tick(dt);
+        // Update our total time
+        self.time += dt;
 
         // Poll our sender
         self.sender.poll(
@@ -85,7 +89,7 @@ impl SocketConnection {
                 packet_builder: crate_builder,
                 recv_packet_window: self.receiver.received_messages(),
             },
-            dt,
+            self.time,
         );
     }
 
@@ -110,6 +114,6 @@ impl SocketConnection {
 
     /// Check if this connection has timed out (no packets received)
     pub fn timed_out(&self) -> bool {
-        self.last_hearbeat.timed_out()
+        self.last_hearbeat <= self.time
     }
 }
