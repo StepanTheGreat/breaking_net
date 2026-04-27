@@ -125,4 +125,8 @@ impl SocketConnection {
     pub fn rtt(&self) -> f64 {
         self.sender.rtt()
     }
+
+    pub fn packet_loss(&self) -> f64 {
+        self.sender.packet_loss()
+    }
 }

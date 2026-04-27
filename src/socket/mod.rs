@@ -12,7 +12,6 @@ mod ssock;
 
 mod receiver;
 mod sender;
-mod stats;
 
 pub use ssock::{SimpleSock, SockSettings};
 #[cfg(feature = "stress_testing")]
@@ -311,6 +310,11 @@ impl Socket {
     /// Retrieve Round Trip Time for the provided connection (if one exists)
     pub fn rtt_for(&self, addr: &SocketAddr) -> Option<f64> {
         self.connections.get(addr).map(|c| c.rtt())
+    }
+
+    /// Retrieve packet loss (between 0 and 1) for the provided connection (if one exists)
+    pub fn packet_loss_for(&self, addr: &SocketAddr) -> Option<f64> {
+        self.connections.get(addr).map(|c| c.packet_loss())
     }
 }
 

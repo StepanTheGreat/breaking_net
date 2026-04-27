@@ -72,6 +72,12 @@ struct PacketWindow {
     force_slide_time: Duration,
 
     time: Duration,
+
+    /// The total amount of packets we sent
+    sent_packets: usize,
+
+    /// The amount of packets that were **considered** lost
+    lost_packets: usize
 }
 
 impl PacketWindow {
@@ -82,6 +88,9 @@ impl PacketWindow {
             pos: 0,
             time,
             force_slide_time: time + WINDOW_FORCE_TIMEOUT,
+
+            sent_packets: 0,
+            lost_packets: 0
         }
     }
 
@@ -109,6 +118,7 @@ impl PacketWindow {
         assert_eq!(self.next_pid(), id, "Unexpected packet ID");
 
         self.queue.push_back(Some(entry));
+        self.sent_packets += 1;
     }
 
     fn slide(&mut self, sent_messages: &SlidingAckWindow) {
@@ -126,7 +136,14 @@ impl PacketWindow {
                         .count();
 
                     // Only slide if all messages from this packet were received
-                    received == packet.messages.len()
+                    if received == packet.messages.len() {
+
+                        // Increment the amount of lost packets
+                        self.lost_packets += 1;
+                        true
+                    } else {
+                        false
+                    }
                 }
 
                 // In any other case just slide forward
@@ -185,6 +202,11 @@ impl PacketWindow {
 
     pub fn window_position(&self) -> PacketSeqId {
         self.pos
+    }
+
+    /// Get current packet loss
+    pub fn packet_loss(&self) -> f64 {
+        (self.lost_packets as f64) / (self.sent_packets.max(1) as f64)
     }
 }
 
@@ -538,5 +560,10 @@ impl SendManager {
     /// Get latest RTT measurements
     pub fn rtt(&self) -> f64 {
         self.rtt.rtt()
+    }
+
+    /// Get current packet loss
+    pub fn packet_loss(&self) -> f64 {
+        self.sent_packet_window.packet_loss()
     }
 }
