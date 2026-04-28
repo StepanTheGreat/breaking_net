@@ -8,15 +8,13 @@ use crate::{
     window::SlidingAckWindow,
 };
 
-/// Resend 10 times per second
-const RESEND_TIMER: Duration = Duration::from_millis(100);
-
-/// After what amount of time to forcefully slide the window (even)
-const WINDOW_FORCE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// At worst, resend every 45 seconds (limit exponential back-off)
+const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Initial RTT of 300ms
 const INIT_RTT: Duration = Duration::from_millis(300);
 
+/// Initial RTT deviation of 50ms
 const INIT_DEVIATION: Duration = Duration::from_millis(50);
 
 /// Sets the prioritization rate for newer values
@@ -76,6 +74,16 @@ struct PacketEntry {
     messages: Box<[MessageId]>,
 }
 
+/// Compute an average time a packet could take to arrive
+/// 
+/// The basic idea is to take the average time it takes for a packet to make a full round trip +
+/// some amount of deviation applied on top for safety.
+/// 
+/// This is mostly used in packet window's timeouts and resend timers 
+fn safe_packet_rtt(rtt: f64, deviation: f64) -> Duration {
+    Duration::from_secs_f64(rtt + 4.0 * deviation)
+}
+
 /// A sliding packet window which lets us sent packets by us. They include important information such as:
 /// - Timestamp of each packet
 /// - A list of messages associated to each packet (more efficient to track)
@@ -100,12 +108,12 @@ struct PacketWindow {
 
 impl PacketWindow {
     /// Create a new window at position 0
-    fn new(time: Duration, capacity: usize) -> Self {
+    fn new(time: Duration, rtt: &RTTMeasurements, capacity: usize) -> Self {
         Self {
             queue: VecDeque::with_capacity(capacity),
             pos: 0,
             time,
-            force_slide_time: time + WINDOW_FORCE_TIMEOUT,
+            force_slide_time: time + safe_packet_rtt(rtt.rtt(), rtt.deviation()),
 
             sent_packets: 0,
             lost_packets: 0
@@ -139,7 +147,7 @@ impl PacketWindow {
         self.sent_packets += 1;
     }
 
-    fn slide(&mut self, sent_messages: &SlidingAckWindow) {
+    fn slide(&mut self, sent_messages: &SlidingAckWindow, rtt: &RTTMeasurements) {
         // While the queue is not empty
         while !self.queue.is_empty() {
             // We're going to check if we can slide the window
@@ -176,7 +184,7 @@ impl PacketWindow {
                 self.pos += 1;
 
                 // Reset our timer
-                self.force_slide_time = self.time + WINDOW_FORCE_TIMEOUT;
+                self.force_slide_time = self.time + safe_packet_rtt(rtt.rtt(), rtt.deviation());
             } else {
                 // In any other case we're blocked
                 break;
@@ -192,18 +200,19 @@ impl PacketWindow {
     pub fn mark_sent(
         &mut self,
         sent_messages: &SlidingAckWindow,
+        rtt: &RTTMeasurements,
         id: PacketSeqId,
     ) -> Option<PacketEntry> {
         let ind = self.pid_to_ind(id)?;
 
         let packet = self.queue[ind].take();
-        self.slide(sent_messages);
+        self.slide(sent_messages, rtt);
 
         packet
     }
 
     /// Update this packet window and forcibly push it when a packet isn't received in time
-    pub fn update(&mut self, time: Duration, sent_messages: &SlidingAckWindow) {
+    pub fn update(&mut self, time: Duration, rtt: &RTTMeasurements, sent_messages: &SlidingAckWindow) {
         self.time = time;
 
         if self.queue.is_empty() {
@@ -214,7 +223,7 @@ impl PacketWindow {
         if self.force_slide_time <= self.time {
             // Forcibly slide
             let _ = self.queue[0].take();
-            self.slide(sent_messages);
+            self.slide(sent_messages, rtt);
         }
     }
 
@@ -256,6 +265,7 @@ impl SequenceCounter {
 struct QueuedMessage {
     message: UserMessage,
     send_time: Option<Duration>,
+    attempts: u32
 }
 
 impl QueuedMessage {
@@ -263,6 +273,7 @@ impl QueuedMessage {
         Self {
             message,
             send_time: Some(send_time),
+            attempts: 0
         }
     }
 
@@ -270,6 +281,7 @@ impl QueuedMessage {
         Self {
             message,
             send_time: None,
+            attempts: 0
         }
     }
 
@@ -294,11 +306,21 @@ impl QueuedMessage {
         self.message
     }
 
+    /// Get the current amount of attempts to send this message. Important for exponential back-off
+    fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
     /// Update this message's send time
     fn set_send_time(&mut self, new_time: Duration) {
         if let Some(send_time) = self.send_time.as_mut() {
             *send_time = new_time;
         }
+    }
+
+    /// Increment the amount of times we tried to resend this message
+    fn increment_attempts(&mut self) {
+        self.attempts += 1;
     }
 }
 
@@ -339,6 +361,9 @@ pub struct SendManager {
 
 impl SendManager {
     pub fn new(time: Duration, to: net::SocketAddr, packets_per_second: usize) -> Self {
+
+        let rtt = RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA);
+
         Self {
             to,
             packets_per_second,
@@ -346,8 +371,8 @@ impl SendManager {
             message_counter: SequenceCounter::new(),
             message_queue: VecDeque::new(),
             sent_message_window: SlidingAckWindow::new(64),
-            sent_packet_window: PacketWindow::new(time, 64),
-            rtt: RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA),
+            sent_packet_window: PacketWindow::new(time, &rtt, 64),
+            rtt,
             time,
         }
     }
@@ -429,7 +454,7 @@ impl SendManager {
         dt: Duration,
     ) {
         self.sent_packet_window
-            .update(self.time, &self.sent_message_window);
+            .update(self.time, &self.rtt, &self.sent_message_window);
 
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
         self.collect_candidates(&mut candidates);
@@ -475,12 +500,29 @@ impl SendManager {
                         // Add it to the list of packed messages by this packet
                         packed_messages.push(message_id);
 
-                        // Find it and reset its timer
-                        self.message_queue
-                            .iter_mut()
-                            .find(|p| matches!(p.message_id(), Some(id) if id == message_id))
-                            .unwrap()
-                            .set_send_time(self.time + RESEND_TIMER);
+                        // Find it and reset its timer + increment retries
+                        {
+                            let (rtt, dev) = (self.rtt(), self.rtt_deviation());
+
+                            let msg = self.message_queue
+                                .iter_mut()
+                                .find(|p| matches!(p.message_id(), Some(id) if id == message_id))
+                                .unwrap();
+
+                            let attempts = msg.attempts() as i32;
+
+                            // The timeout increments with every attempt, maxed out at MAX_RESEND_TIMEOUT
+                            // The purpose is to stop frequently "bombarding" the recipient with packets if they're "unreachable"
+                            let new_timeout = safe_packet_rtt(rtt, dev)
+                                .mul_f64(2.0f64.powi(attempts))
+                                .min(MAX_RESEND_TIMEOUT);
+
+                            // Set new timeout
+                            msg.set_send_time(self.time + new_timeout);
+                            
+                            // Make sure to increment attempts AFTER (the first attempt is always 0, so first back-off scale is 1)
+                            msg.increment_attempts();
+                        }
                     }
 
                     // Consume and push it
@@ -552,7 +594,7 @@ impl SendManager {
         // If this packet is new - let us register and process it
         if let Some(packet) = self
             .sent_packet_window
-            .mark_sent(&self.sent_message_window, packet_id)
+            .mark_sent(&self.sent_message_window, &self.rtt, packet_id)
         {
             // Compute our RTT delta and update measurements
             let dt = self.time - packet.timestamp;
