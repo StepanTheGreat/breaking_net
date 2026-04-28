@@ -4,7 +4,7 @@ use crate::{
     Reliability,
     packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
     socket::{
-        SimpleSock,
+        SocketBackend,
         receiver::ReceiveManager,
         sender::{SendContext, SendManager},
     },
@@ -75,7 +75,7 @@ impl SocketConnection {
 
     pub fn poll(
         &mut self,
-        socket: &mut SimpleSock,
+        socket: &mut dyn SocketBackend,
         crate_builder: &mut PacketCrateBuilder,
         dt: Duration,
     ) {

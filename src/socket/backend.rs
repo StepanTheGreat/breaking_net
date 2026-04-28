@@ -103,8 +103,28 @@ pub struct SockSettings {
     pub reuses_address: bool,
 }
 
+/// A socket backend that can be used in conjunction with the high-level socket.
+/// 
+/// The primary purpose of this abstraction is to allow virtual sockets that interact within their own virtual network 
+/// (for testing and batching purposes). This however can easily be extended to other use cases.
+pub trait SocketBackend {
+    /// Send some data to the provided address
+    fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()>;
+
+    /// Receive a message from anyone
+    fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)>;
+
+    /// Get this socket's bound address
+    fn addr(&self) -> net::SocketAddr;
+
+    /// Does this socket have any messages?
+    ///
+    /// Calling this method, compared to [SimpleSock::recv_from], doesn't consume the messages
+    fn has_messages(&self) -> bool;
+}
+
 /// A simplified socket structure which directly handles buffers, reading and so on
-pub struct SimpleSock {
+pub struct SocketUDP {
     /// The socket itself
     socket: sock::Socket,
 
@@ -121,7 +141,7 @@ pub struct SimpleSock {
     mtu: usize,
 }
 
-impl SimpleSock {
+impl SocketUDP {
     pub fn new_ex(addr: net::SocketAddr, mtu: usize, settings: SockSettings) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             sock::Domain::IPV4
@@ -167,9 +187,10 @@ impl SimpleSock {
     pub fn new(addr: net::SocketAddr, capacity: usize) -> io::Result<Self> {
         Self::new_ex(addr, capacity, SockSettings::default())
     }
+}
 
-    /// Send some data to the provided address
-    pub fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
+impl SocketBackend for SocketUDP {
+    fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
         // If we're stress testing - we'll just not do anything (like if the message got naturally lost)
         #[cfg(feature = "stress_testing")]
         if should_lose_message() {
@@ -213,7 +234,7 @@ impl SimpleSock {
     }
 
     /// Receive a message from anyone
-    pub fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)> {
+    fn recv_from(&mut self) -> Option<(&[u8], net::SocketAddr)> {
         let socket_read = {
             // Casting between &mut [u8] and &mut MaybeUninit<u8> here is safe. This mutable buffer reference is only valid within this single method call
             let recv_buff =
@@ -247,14 +268,14 @@ impl SimpleSock {
         }
     }
 
-    pub fn addr(&self) -> net::SocketAddr {
+    fn addr(&self) -> net::SocketAddr {
         self.addr
     }
 
     /// Does this socket have any messages?
     ///
     /// Calling this method, compared to [SimpleSock::recv_from], doesn't consume the messages
-    pub fn has_messages(&self) -> bool {
+    fn has_messages(&self) -> bool {
         self.socket.peek_sender().is_ok()
     }
 }

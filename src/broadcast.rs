@@ -3,14 +3,14 @@ use std::io;
 use std::net;
 
 use crate::MTU_SIZE_PRIVATE;
-use crate::socket::{SimpleSock, SockSettings};
+use crate::socket::{SocketUDP, SocketBackend, SockSettings};
 
 /// A broadcast listener *listens* for broadcast packets.
 ///
 /// You could use one to for example, listen for game invites and other public information.
 pub struct BroadcastListener {
     listen_addr: net::SocketAddr,
-    socket: SimpleSock,
+    socket: SocketUDP,
 }
 
 impl BroadcastListener {
@@ -18,7 +18,7 @@ impl BroadcastListener {
     ///
     /// Note that multiple broadcast listeners can sit on the same port, since they shared.
     pub fn new(listen_addr: net::SocketAddr) -> io::Result<Self> {
-        let socket = SimpleSock::new_ex(
+        let socket = SocketUDP::new_ex(
             listen_addr,
             MTU_SIZE_PRIVATE,
             SockSettings {

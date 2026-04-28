@@ -4,7 +4,7 @@ use std::{collections::VecDeque, rc::Rc, time::Duration};
 use crate::{
     Reliability,
     packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
-    socket::ssock::SimpleSock,
+    socket::SocketBackend,
     window::SlidingAckWindow,
 };
 
@@ -212,7 +212,7 @@ impl PacketWindow {
 
 /// The context neccessary to poll a [SendManager]
 pub struct SendContext<'a> {
-    pub socket: &'a mut SimpleSock,
+    pub socket: &'a mut dyn SocketBackend,
     pub packet_builder: &'a mut PacketCrateBuilder,
     pub recv_packet_window: &'a SlidingAckWindow,
 }
@@ -386,12 +386,12 @@ impl SendManager {
 
         #[cfg(feature = "stress_testing")]
         {
-            use crate::socket::ssock::should_reorder_messages;
+            use crate::socket::backend::should_reorder_messages;
 
             if should_reorder_messages() {
                 use rand::seq::SliceRandom;
 
-                use crate::socket::ssock::RNG_STATE;
+                use crate::socket::backend::RNG_STATE;
 
                 let (a, b) = candidates.as_mut_slices();
 
@@ -405,7 +405,7 @@ impl SendManager {
     /// A separate polling method that specialises in sending messages
     fn prepare_and_send(
         &mut self,
-        socket: &mut SimpleSock,
+        socket: &mut dyn SocketBackend,
         crate_builder: &mut PacketCrateBuilder,
         recv_packet_window: &SlidingAckWindow,
         dt: Duration,

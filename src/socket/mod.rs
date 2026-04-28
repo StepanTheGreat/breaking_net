@@ -8,22 +8,22 @@ use std::{
 
 mod channels;
 mod connection;
-mod ssock;
+mod backend;
 
 mod receiver;
 mod sender;
 
-pub use ssock::{SimpleSock, SockSettings};
+pub use backend::{SocketBackend, SockSettings};
+pub(crate) use backend::SocketUDP;
+
 #[cfg(feature = "stress_testing")]
-pub use ssock::{
+pub use backend::{
     reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,
     set_message_loss_chance, set_message_reorder_chance,
 };
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE,
-    packet::{PacketCrate, PacketCrateBuilder, Reliability},
-    socket_addr,
+    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr
 };
 
 use connection::SocketConnection;
@@ -79,7 +79,7 @@ impl Default for SocketOptions {
 ///
 /// Automatically handles connection management (except for heartbeats), reliable delivery and so on.
 pub struct Socket {
-    socket: SimpleSock,
+    socket: Box<dyn SocketBackend>,
     options: SocketOptions,
 
     packet_builder: PacketCrateBuilder,
@@ -92,7 +92,9 @@ pub struct Socket {
 impl Socket {
     /// Create a new socket on the provided address with extended configurations
     pub fn new_ex(addr: net::SocketAddr, options: SocketOptions) -> io::Result<Self> {
-        let socket = SimpleSock::new_ex(
+
+        // By default our default socket is always UDP
+        let socket = SocketUDP::new_ex(
             addr,
             MTU_SIZE_PRIVATE,
             SockSettings {
@@ -102,7 +104,7 @@ impl Socket {
         )?;
 
         Ok(Self {
-            socket,
+            socket: Box::new(socket),
             options,
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
@@ -214,7 +216,7 @@ impl Socket {
     /// Poll all our connections and receive their messages
     fn poll_connections(&mut self, dt: Duration) {
         for (_, connection) in self.connections.iter_mut() {
-            connection.poll(&mut self.socket, &mut self.packet_builder, dt);
+            connection.poll(self.socket.as_mut(), &mut self.packet_builder, dt);
 
             while let Some(message) = connection.recv_message() {
                 let reliability = message.reliability();
