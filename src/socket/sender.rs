@@ -17,36 +17,54 @@ const WINDOW_FORCE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Initial RTT of 300ms
 const INIT_RTT: Duration = Duration::from_millis(300);
 
-/// Prioritize existing values (85%) over newer ones (15%)
-const RTT_ALPHA: f64 = 0.15;
+const INIT_DEVIATION: Duration = Duration::from_millis(50);
+
+/// Sets the prioritization rate for newer values
+const RTT_ALPHA: f64 = 0.1;
 
 struct RTTMeasurements {
     rtt: f64,
+    dev: f64,
     alpha: f64,
 }
 
 impl RTTMeasurements {
-    fn new(init: Duration, alpha: f64) -> Self {
+    fn new(init_rtt: Duration, init_dev: Duration, alpha: f64) -> Self {
         assert!(
             (0.0..=1.0).contains(&alpha),
             "Alpha must be in range between 0 and 1"
         );
 
         Self {
-            rtt: init.as_secs_f64(),
+            rtt: init_rtt.as_secs_f64(),
+            dev: init_dev.as_secs_f64(),
             alpha,
         }
     }
 
     /// Push a new delta into this RTT tracker
     fn push(&mut self, dt: Duration) {
-        // Our RTT is (1-alpha)*RTT + dt*alpha
+        // Compute alpha for older values
+        let old_alpha = 1.0 - self.alpha;
+        let dt = dt.as_secs_f64();
+
+        // Our RTT is (1-alpha)*RTT + alpha*dt
         // Based on values of alpha, it differently prioritizes newer values over older ones
-        self.rtt = (1.0 - self.alpha) * self.rtt + dt.as_secs_f64() * self.alpha;
+        self.rtt = old_alpha*self.rtt + self.alpha*dt;
+
+
+        // Our deviation here is based on MAD https://en.wikipedia.org/wiki/Median_absolute_deviation
+        self.dev = old_alpha*self.dev + self.alpha*(dt-self.rtt).abs();
     }
 
+    /// Get average RTT
     fn rtt(&self) -> f64 {
         self.rtt
+    }
+
+    /// Get median average RTT deviation 
+    fn deviation(&self) -> f64 {
+        self.dev
     }
 }
 
@@ -329,7 +347,7 @@ impl SendManager {
             message_queue: VecDeque::new(),
             sent_message_window: SlidingAckWindow::new(64),
             sent_packet_window: PacketWindow::new(time, 64),
-            rtt: RTTMeasurements::new(INIT_RTT, RTT_ALPHA),
+            rtt: RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA),
             time,
         }
     }
@@ -366,7 +384,7 @@ impl SendManager {
     }
 
     /// Update messages while also collecting them into a queue at the same time
-    fn update_collect_candidates(&mut self, candidates: &mut VecDeque<QueuedMessage>) {
+    fn collect_candidates(&mut self, candidates: &mut VecDeque<QueuedMessage>) {
         // We're going to go from back to front
         for ind in (0..self.message_queue.len()).rev() {
             // Then clone it
@@ -414,7 +432,7 @@ impl SendManager {
             .update(self.time, &self.sent_message_window);
 
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
-        self.update_collect_candidates(&mut candidates);
+        self.collect_candidates(&mut candidates);
 
         let mut cant_fit_stack = Vec::new();
 
@@ -560,6 +578,11 @@ impl SendManager {
     /// Get latest RTT measurements
     pub fn rtt(&self) -> f64 {
         self.rtt.rtt()
+    }
+
+    /// Get latest median RTT deviation
+    pub fn rtt_deviation(&self) -> f64 {
+        self.rtt.deviation()
     }
 
     /// Get current packet loss
