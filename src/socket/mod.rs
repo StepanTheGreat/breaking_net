@@ -6,14 +6,15 @@ use std::{
     time::Duration,
 };
 
+mod backend;
 mod channels;
 mod connection;
-mod backend;
+mod stats;
 
 mod receiver;
 mod sender;
 
-pub use backend::{SocketBackend, SockSettings};
+pub use backend::SocketBackend;
 pub(crate) use backend::SocketUDP;
 
 #[cfg(feature = "stress_testing")]
@@ -23,7 +24,9 @@ pub use backend::{
 };
 
 use crate::{
-    MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr
+    DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE,
+    packet::{PacketCrate, PacketCrateBuilder, Reliability},
+    socket_addr,
 };
 
 use connection::SocketConnection;
@@ -63,6 +66,9 @@ pub struct SocketOptions {
 
     /// Whether the address of this socket can be reused by other sockets. This is primarily useful for broadcast listeners, so usually keep it on default
     pub reuses_address: bool,
+
+    /// Packet budget per second. Depends highly on application
+    pub packets_per_second: u32,
 }
 
 #[allow(clippy::derivable_impls, reason = "Keeping for explicitness")]
@@ -71,6 +77,7 @@ impl Default for SocketOptions {
         Self {
             broadcaster: false,
             reuses_address: false,
+            packets_per_second: DEFAULT_PACKET_BUDGET,
         }
     }
 }
@@ -92,16 +99,8 @@ pub struct Socket {
 impl Socket {
     /// Create a new socket on the provided address with extended configurations
     pub fn new_ex(addr: net::SocketAddr, options: SocketOptions) -> io::Result<Self> {
-
         // By default our default socket is always UDP
-        let socket = SocketUDP::new_ex(
-            addr,
-            MTU_SIZE_PRIVATE,
-            SockSettings {
-                broadcaster: options.broadcaster,
-                reuses_address: options.reuses_address,
-            },
-        )?;
+        let socket = SocketUDP::new_ex(addr, MTU_SIZE_PRIVATE, &options)?;
 
         Ok(Self {
             socket: Box::new(socket),
@@ -279,7 +278,10 @@ impl Socket {
         // If there's not yet connection
         if !self.is_connected(&addr) {
             self.event_queue.push_back(SocketEvent::Connection(addr));
-            self.connections.insert(addr, SocketConnection::new(addr));
+            self.connections.insert(
+                addr,
+                SocketConnection::new(addr, self.options.packets_per_second),
+            );
         }
     }
 

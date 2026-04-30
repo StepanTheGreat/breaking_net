@@ -27,9 +27,9 @@ pub struct SocketConnection {
 }
 
 impl SocketConnection {
-    pub fn new(to: net::SocketAddr) -> Self {
+    pub fn new(to: net::SocketAddr, packets_per_second: u32) -> Self {
         let time = Duration::ZERO;
-        let sender = SendManager::new(time, to, 100);
+        let sender = SendManager::new(time, to, packets_per_second);
         let receiver = ReceiveManager::new();
 
         Self {

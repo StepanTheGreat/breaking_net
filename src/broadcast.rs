@@ -3,7 +3,8 @@ use std::io;
 use std::net;
 
 use crate::MTU_SIZE_PRIVATE;
-use crate::socket::{SocketUDP, SocketBackend, SockSettings};
+use crate::SocketOptions;
+use crate::socket::{SocketBackend, SocketUDP};
 
 /// A broadcast listener *listens* for broadcast packets.
 ///
@@ -21,7 +22,7 @@ impl BroadcastListener {
         let socket = SocketUDP::new_ex(
             listen_addr,
             MTU_SIZE_PRIVATE,
-            SockSettings {
+            &SocketOptions {
                 reuses_address: true,
                 ..Default::default()
             },

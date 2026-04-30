@@ -93,19 +93,13 @@ use std::{io, mem::MaybeUninit, net};
 pub use stress_testing::*;
 
 use crate::{
-    PROTOCOL_SIGNATURE,
+    PROTOCOL_SIGNATURE, SocketOptions,
     crc32::{CRC32_SIG_LEN, crc32_sign, crc32_verify},
 };
 
-#[derive(Default, Clone, Copy)]
-pub struct SockSettings {
-    pub broadcaster: bool,
-    pub reuses_address: bool,
-}
-
 /// A socket backend that can be used in conjunction with the high-level socket.
-/// 
-/// The primary purpose of this abstraction is to allow virtual sockets that interact within their own virtual network 
+///
+/// The primary purpose of this abstraction is to allow virtual sockets that interact within their own virtual network
 /// (for testing and batching purposes). This however can easily be extended to other use cases.
 pub trait SocketBackend {
     /// Send some data to the provided address
@@ -142,7 +136,7 @@ pub struct SocketUDP {
 }
 
 impl SocketUDP {
-    pub fn new_ex(addr: net::SocketAddr, mtu: usize, settings: SockSettings) -> io::Result<Self> {
+    pub fn new_ex(addr: net::SocketAddr, mtu: usize, options: &SocketOptions) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
             sock::Domain::IPV4
         } else {
@@ -155,8 +149,8 @@ impl SocketUDP {
         socket.set_nonblocking(true)?;
 
         // Apply our options
-        socket.set_broadcast(settings.broadcaster)?;
-        socket.set_reuse_address(settings.reuses_address)?;
+        socket.set_broadcast(options.broadcaster)?;
+        socket.set_reuse_address(options.reuses_address)?;
 
         // Bind it to the provided address
         socket.bind(&addr.into())?;
@@ -185,7 +179,7 @@ impl SocketUDP {
     }
 
     pub fn new(addr: net::SocketAddr, capacity: usize) -> io::Result<Self> {
-        Self::new_ex(addr, capacity, SockSettings::default())
+        Self::new_ex(addr, capacity, &SocketOptions::default())
     }
 }
 

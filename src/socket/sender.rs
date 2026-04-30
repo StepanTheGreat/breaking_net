@@ -4,67 +4,36 @@ use std::{collections::VecDeque, rc::Rc, time::Duration};
 use crate::{
     Reliability,
     packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
-    socket::SocketBackend,
+    socket::{
+        SocketBackend,
+        stats::{Ema, RTTMeasurements},
+    },
     window::SlidingAckWindow,
 };
 
-/// At worst, resend every 45 seconds (limit exponential back-off)
-const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(45);
+/// At worst, resend every 30 seconds (limit exponential back-off)
+const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Initial RTT of 300ms
-const INIT_RTT: Duration = Duration::from_millis(300);
+const INIT_RTT: Duration = Duration::from_millis(200);
 
 /// Initial RTT deviation of 50ms
 const INIT_DEVIATION: Duration = Duration::from_millis(50);
 
-/// Sets the prioritization rate for newer values
+/// We'll start at 0 and let the protocol figure out the packet loss by itself
+const INIT_PACKET_LOSS: f64 = 0.0;
+
+/// Keep 60 RTT samples (60 seconds)
+const RTT_HISTORY_LEN: usize = 60;
+
+/// Sets the prioritization rate for newer values. RTT is highly volatile, so an alpha of 0.1 (~10 samples) is usually good enough
 const RTT_ALPHA: f64 = 0.1;
 
-struct RTTMeasurements {
-    rtt: f64,
-    dev: f64,
-    alpha: f64,
-}
+/// Packet loss is a lot less volatile, so we're keeping it at between ~20 samples
+const PACKET_LOSS_ALPHA: f64 = 0.05;
 
-impl RTTMeasurements {
-    fn new(init_rtt: Duration, init_dev: Duration, alpha: f64) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&alpha),
-            "Alpha must be in range between 0 and 1"
-        );
-
-        Self {
-            rtt: init_rtt.as_secs_f64(),
-            dev: init_dev.as_secs_f64(),
-            alpha,
-        }
-    }
-
-    /// Push a new delta into this RTT tracker
-    fn push(&mut self, dt: Duration) {
-        // Compute alpha for older values
-        let old_alpha = 1.0 - self.alpha;
-        let dt = dt.as_secs_f64();
-
-        // Our RTT is (1-alpha)*RTT + alpha*dt
-        // Based on values of alpha, it differently prioritizes newer values over older ones
-        self.rtt = old_alpha*self.rtt + self.alpha*dt;
-
-
-        // Our deviation here is based on MAD https://en.wikipedia.org/wiki/Median_absolute_deviation
-        self.dev = old_alpha*self.dev + self.alpha*(dt-self.rtt).abs();
-    }
-
-    /// Get average RTT
-    fn rtt(&self) -> f64 {
-        self.rtt
-    }
-
-    /// Get median average RTT deviation 
-    fn deviation(&self) -> f64 {
-        self.dev
-    }
-}
+/// At worst network conditions, our reduction rate will be limited at 30% of our total capacity
+const MAX_PACKET_REDUCTION: f64 = 0.3;
 
 /// A single packet entry
 struct PacketEntry {
@@ -75,11 +44,11 @@ struct PacketEntry {
 }
 
 /// Compute an average time a packet could take to arrive
-/// 
+///
 /// The basic idea is to take the average time it takes for a packet to make a full round trip +
 /// some amount of deviation applied on top for safety.
-/// 
-/// This is mostly used in packet window's timeouts and resend timers 
+///
+/// This is mostly used in packet window's timeouts and resend timers
 fn safe_packet_rtt(rtt: f64, deviation: f64) -> Duration {
     Duration::from_secs_f64(rtt + 4.0 * deviation)
 }
@@ -99,11 +68,8 @@ struct PacketWindow {
 
     time: Duration,
 
-    /// The total amount of packets we sent
-    sent_packets: usize,
-
-    /// The amount of packets that were **considered** lost
-    lost_packets: usize
+    /// EMA packet loss, useful for general statistics
+    packet_loss: Ema,
 }
 
 impl PacketWindow {
@@ -115,8 +81,7 @@ impl PacketWindow {
             time,
             force_slide_time: time + safe_packet_rtt(rtt.rtt(), rtt.deviation()),
 
-            sent_packets: 0,
-            lost_packets: 0
+            packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
         }
     }
 
@@ -144,14 +109,19 @@ impl PacketWindow {
         assert_eq!(self.next_pid(), id, "Unexpected packet ID");
 
         self.queue.push_back(Some(entry));
-        self.sent_packets += 1;
+    }
+
+    /// Mark next packet status to compute packet loss
+    fn mark_packet_status(&mut self, lost: bool) {
+        // We're taking the inverse, so lost = 0, not = 1
+        self.packet_loss.push((!lost) as u8 as f64);
     }
 
     fn slide(&mut self, sent_messages: &SlidingAckWindow, rtt: &RTTMeasurements) {
         // While the queue is not empty
         while !self.queue.is_empty() {
             // We're going to check if we can slide the window
-            let slide = match &self.queue[0] {
+            let (slide, by_force) = match &self.queue[0] {
                 // In case we get a packet, we can only slide the window if it has become irrelevant
                 Some(packet) => {
                     // Count how many messages from this packet we sent
@@ -162,21 +132,19 @@ impl PacketWindow {
                         .count();
 
                     // Only slide if all messages from this packet were received
-                    if received == packet.messages.len() {
-
-                        // Increment the amount of lost packets
-                        self.lost_packets += 1;
-                        true
-                    } else {
-                        false
-                    }
+                    (received == packet.messages.len(), true)
                 }
 
                 // In any other case just slide forward
-                None => true,
+                None => (true, false),
             };
 
             if slide {
+                if by_force {
+                    // Mark our packet as lost here, since it's irrelevant
+                    self.mark_packet_status(false);
+                }
+
                 // Pop it
                 let _ = self.queue.pop_front();
 
@@ -206,13 +174,22 @@ impl PacketWindow {
         let ind = self.pid_to_ind(id)?;
 
         let packet = self.queue[ind].take();
+
+        // Mark our packet as not lost
+        self.mark_packet_status(false);
+
         self.slide(sent_messages, rtt);
 
         packet
     }
 
     /// Update this packet window and forcibly push it when a packet isn't received in time
-    pub fn update(&mut self, time: Duration, rtt: &RTTMeasurements, sent_messages: &SlidingAckWindow) {
+    pub fn update(
+        &mut self,
+        time: Duration,
+        rtt: &RTTMeasurements,
+        sent_messages: &SlidingAckWindow,
+    ) {
         self.time = time;
 
         if self.queue.is_empty() {
@@ -223,6 +200,10 @@ impl PacketWindow {
         if self.force_slide_time <= self.time {
             // Forcibly slide
             let _ = self.queue[0].take();
+
+            // Mark this packet as lost
+            self.mark_packet_status(true);
+
             self.slide(sent_messages, rtt);
         }
     }
@@ -233,7 +214,7 @@ impl PacketWindow {
 
     /// Get current packet loss
     pub fn packet_loss(&self) -> f64 {
-        (self.lost_packets as f64) / (self.sent_packets.max(1) as f64)
+        self.packet_loss.get()
     }
 }
 
@@ -265,7 +246,7 @@ impl SequenceCounter {
 struct QueuedMessage {
     message: UserMessage,
     send_time: Option<Duration>,
-    attempts: u32
+    attempts: u32,
 }
 
 impl QueuedMessage {
@@ -273,7 +254,7 @@ impl QueuedMessage {
         Self {
             message,
             send_time: Some(send_time),
-            attempts: 0
+            attempts: 0,
         }
     }
 
@@ -281,7 +262,7 @@ impl QueuedMessage {
         Self {
             message,
             send_time: None,
-            attempts: 0
+            attempts: 0,
         }
     }
 
@@ -329,7 +310,7 @@ pub struct SendManager {
     to: net::SocketAddr,
 
     /// The amount of packets per second
-    packets_per_second: usize,
+    packets_per_second: u32,
 
     /// The packet ID counter
     packet_counter: SequenceCounter,
@@ -360,9 +341,8 @@ pub struct SendManager {
 }
 
 impl SendManager {
-    pub fn new(time: Duration, to: net::SocketAddr, packets_per_second: usize) -> Self {
-
-        let rtt = RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA);
+    pub fn new(time: Duration, to: net::SocketAddr, packets_per_second: u32) -> Self {
+        let rtt = RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA, RTT_HISTORY_LEN);
 
         Self {
             to,
@@ -462,10 +442,7 @@ impl SendManager {
         let mut cant_fit_stack = Vec::new();
 
         // How many packets can we even send?
-        let mut available_packets = (
-            self.packets_per_second as f32 * dt.as_secs_f32().min(1.0)
-            // No matter the delta here, we're not going to send more than our PPS in a single second
-        ) as usize;
+        let mut available_packets = self.compute_packet_budget(dt);
 
         // Only one packet per frame can be ack-only. In any other case it's wasteful
         let mut available_ack_only_packet = true;
@@ -504,7 +481,8 @@ impl SendManager {
                         {
                             let (rtt, dev) = (self.rtt(), self.rtt_deviation());
 
-                            let msg = self.message_queue
+                            let msg = self
+                                .message_queue
                                 .iter_mut()
                                 .find(|p| matches!(p.message_id(), Some(id) if id == message_id))
                                 .unwrap();
@@ -519,7 +497,7 @@ impl SendManager {
 
                             // Set new timeout
                             msg.set_send_time(self.time + new_timeout);
-                            
+
                             // Make sure to increment attempts AFTER (the first attempt is always 0, so first back-off scale is 1)
                             msg.increment_attempts();
                         }
@@ -571,6 +549,24 @@ impl SendManager {
         }
     }
 
+    /// Compute an approximatee packet budget based of the current network conditions and delta time
+    fn compute_packet_budget(&self, dt: Duration) -> u32 {
+        // No matter the delta here, we're not going to send more than our PPS in a single second
+        let dt = dt.as_secs_f64().min(1.0);
+
+        let base_rtt = self.base_rtt(); // Get our base RTT
+        let rtt = self.rtt(); // Get our current (volatile) RTT
+
+        // How much does the current RTT relate to the base RTT? At best it should relate as 1 (identical), at best - 2 (two times higher)
+        let relation = (rtt / base_rtt).clamp(1.0, 2.0);
+
+        // Compute the total reduction between 0 and our MAX_PACKET_REDUCTION
+        let reduction = (relation - 1.0) * MAX_PACKET_REDUCTION;
+
+        // Our resulting budget is our PPS * our reduction * delta time
+        (self.packets_per_second as f64 * (1.0 - reduction) * dt) as u32
+    }
+
     // Remove all messages from the message queue that were already received by the recipient
     pub fn cleanup_received_messages(&mut self) {
         let window = &self.sent_message_window;
@@ -592,9 +588,9 @@ impl SendManager {
     /// A packet ID of ours was acknowledged by the receiver
     pub fn mark_sent_packet_received(&mut self, packet_id: PacketSeqId) {
         // If this packet is new - let us register and process it
-        if let Some(packet) = self
-            .sent_packet_window
-            .mark_sent(&self.sent_message_window, &self.rtt, packet_id)
+        if let Some(packet) =
+            self.sent_packet_window
+                .mark_sent(&self.sent_message_window, &self.rtt, packet_id)
         {
             // Compute our RTT delta and update measurements
             let dt = self.time - packet.timestamp;
@@ -613,6 +609,7 @@ impl SendManager {
         let dt = time.saturating_sub(self.time);
         self.time = time;
 
+        self.rtt.update(self.time);
         self.cleanup_received_messages();
         self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
     }
@@ -625,6 +622,11 @@ impl SendManager {
     /// Get latest median RTT deviation
     pub fn rtt_deviation(&self) -> f64 {
         self.rtt.deviation()
+    }
+
+    /// Get the median RTT which is much more stable and more representable of network's health
+    pub fn base_rtt(&self) -> f64 {
+        self.rtt.median()
     }
 
     /// Get current packet loss

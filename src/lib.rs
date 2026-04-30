@@ -20,6 +20,9 @@ pub use socket::{
     set_message_loss_chance, set_message_reorder_chance,
 };
 
+/// The default available packet budget
+pub(crate) const DEFAULT_PACKET_BUDGET: u32 = 100;
+
 /// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
 ///
 /// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely
