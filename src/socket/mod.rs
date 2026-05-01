@@ -175,29 +175,27 @@ impl Socket {
 
     /// Receive and distribute (to connections) messages
     fn receive_messages(&mut self, dt: Duration) {
-
         // No matter what delta we get, it will still be capped to 1s. Polls must be frequent.
         let dt = dt.as_secs_f64().min(1.0);
 
         // Clear our recv budgets from the last call
         self.recv_budgets.clear();
-        
+
         // How many packets per address we can receive during this poll. Essentially rate limiting.
         let recv_budget = (self.options.packets_per_second as f64 * dt) as u32;
 
         // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
-            
             // Get current sender's budget
-            let budget = self.recv_budgets.entry(sender)
-                .or_insert(recv_budget);
+            let budget = self.recv_budgets.entry(sender).or_insert(recv_budget);
 
             // If it's 0 - simply drop this packet and don't do anything with it. Peers should respect our PPS.
-            if *budget == 0 { continue };
+            if *budget == 0 {
+                continue;
+            };
 
             // In any other case decrement the budget
             *budget -= 1;
-
 
             // If it's decodable
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
