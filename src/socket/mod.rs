@@ -91,6 +91,7 @@ pub struct Socket {
 
     packet_builder: PacketCrateBuilder,
     connections: HashMap<net::SocketAddr, SocketConnection>,
+    recv_budgets: HashMap<net::SocketAddr, u32>,
 
     event_queue: VecDeque<SocketEvent>,
     message_queue: VecDeque<ReceivedMessage>,
@@ -108,6 +109,7 @@ impl Socket {
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
             connections: HashMap::new(),
+            recv_budgets: HashMap::new(),
 
             event_queue: VecDeque::new(),
             message_queue: VecDeque::new(),
@@ -172,8 +174,31 @@ impl Socket {
     }
 
     /// Receive and distribute (to connections) messages
-    fn receive_messages(&mut self) {
+    fn receive_messages(&mut self, dt: Duration) {
+
+        // No matter what delta we get, it will still be capped to 1s. Polls must be frequent.
+        let dt = dt.as_secs_f64().min(1.0);
+
+        // Clear our recv budgets from the last call
+        self.recv_budgets.clear();
+        
+        // How many packets per address we can receive during this poll. Essentially rate limiting.
+        let recv_budget = (self.options.packets_per_second as f64 * dt) as u32;
+
+        // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
+            
+            // Get current sender's budget
+            let budget = self.recv_budgets.entry(sender)
+                .or_insert(recv_budget);
+
+            // If it's 0 - simply drop this packet and don't do anything with it. Peers should respect our PPS.
+            if *budget == 0 { continue };
+
+            // In any other case decrement the budget
+            *budget -= 1;
+
+
             // If it's decodable
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
                 Ok(pcrate) => pcrate,
@@ -244,7 +269,7 @@ impl Socket {
     /// Poll this socket thus updating its inner receive buffer and sending data.
     pub fn poll(&mut self, dt: Duration) {
         // We're going to collect all messages received by this socket
-        self.receive_messages();
+        self.receive_messages(dt);
 
         // Now, we're going to poll each connection individually as well
         self.poll_connections(dt);
