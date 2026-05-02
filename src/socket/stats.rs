@@ -85,7 +85,7 @@ impl RTTMeasurements {
 
         // Our deviation is based on MAD https://en.wikipedia.org/wiki/Median_absolute_deviation
         // Which doesn't gives as much attention to outliers compared to standard deviation
-        self.rtt_dev.push(dt - self.rtt.get());
+        self.rtt_dev.push((dt - self.rtt.get()).abs());
     }
 
     /// Get average RTT
