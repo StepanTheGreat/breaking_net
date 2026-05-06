@@ -407,6 +407,7 @@ impl SendManager {
             }
         }
 
+        // TODO: This breaks internal protocol logic (strict order). This MUST be implemented on a virtual low-level socket instead
         #[cfg(feature = "stress_testing")]
         {
             use crate::socket::backend::should_reorder_messages;
@@ -609,7 +610,7 @@ impl SendManager {
         let dt = time.saturating_sub(self.time);
         self.time = time;
 
-        self.rtt.update(self.time);
+        self.rtt.update(dt);
         self.cleanup_received_messages();
         self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
     }

@@ -2,6 +2,9 @@ use std::time::Duration;
 
 use crate::utils::Circular;
 
+// We'll keep it at 500ms
+const RTT_RECORD_FREQ: Duration = Duration::from_millis(500);
+
 /// Exponential Moving Average structure for convenient exponential smoothing of continous samples.
 pub struct Ema {
     data: f64,
@@ -70,9 +73,11 @@ impl RTTMeasurements {
     }
 
     /// RTT measurements must be updated to keep recording average RTT history and computing the median
-    pub fn update(&mut self, time: Duration) {
-        if time > self.next_rtt_record {
-            self.next_rtt_record = time + Duration::from_millis(500);
+    pub fn update(&mut self, dt: Duration) {
+        self.next_rtt_record = self.next_rtt_record.saturating_sub(dt);
+
+        if self.next_rtt_record.is_zero() {
+            self.next_rtt_record = RTT_RECORD_FREQ;
             self.record_rtt();
         }
     }
@@ -115,5 +120,72 @@ impl RTTMeasurements {
 
             (a + b) / 2.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use crate::assert_eq_eps;
+
+use super::*;
+
+    #[test]
+    fn test_measurements() {
+        const RTT: Duration = Duration::from_millis(50);
+        const DEV: Duration = Duration::from_millis(10);
+        const DT: Duration = RTT_RECORD_FREQ;
+        const EPS: f64 = 0.02;
+
+        let mut stats = RTTMeasurements::new(
+            RTT, 
+            DEV, 
+            0.8, 
+            20
+        );
+
+        // By default there are no samples
+        assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
+        assert_eq_eps!(stats.rtt(), RTT.as_secs_f64(), EPS);
+        assert_eq_eps!(stats.deviation(), DEV.as_secs_f64(), EPS);
+
+        dbg!(stats.median());
+
+        // Push a few really lucky packets
+        for _ in 0..2 {
+            stats.push(Duration::from_millis(20));
+            stats.update(DT);
+            dbg!(stats.median());
+        }
+
+        // Our RTT should go down a little bit as a reaction
+        assert!(stats.rtt() < RTT.as_secs_f64());
+
+        // Let's push a few more packets (and record them)
+        for _ in 0..10 {
+            stats.push(RTT);
+            stats.update(DT);
+            dbg!(stats.median());
+        }
+        
+        // No changes in median or deviation
+        assert_eq_eps!(stats.rtt(), RTT.as_secs_f64(), EPS);
+        assert_eq_eps!(stats.deviation(), DEV.as_secs_f64(), EPS);
+        dbg!(stats.median());
+        assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
+
+
+        // Now we'll push and record two terrible latencies
+        for _ in 0..2 {
+            stats.push(Duration::from_millis(500));
+            stats.update(DT);
+        }
+
+        // Our RTT must be drastically different, BUT, our median should stay the same, since according to history network's average
+        // was constantly 50ms. 
+        assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
+        assert!(stats.rtt() > stats.median());
+        assert!(stats.deviation() > DEV.as_secs_f64());
+
     }
 }

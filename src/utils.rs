@@ -53,3 +53,14 @@ impl<T> Circular<T> {
         self.buffer.is_empty()
     }
 }
+
+/// Assert equals with an epsilon. Useful for float comparisons
+#[macro_export]
+macro_rules! assert_eq_eps {
+    ($a:expr, $b:expr, $c:expr) => {
+        assert!(($b-$a).abs() <= $c);
+    };
+    ($a:expr, $b:expr, $c:expr, $m:expr) => {
+        assert!(($b-$a).abs() <= $c, $m);
+    };
+}
