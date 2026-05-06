@@ -21,7 +21,7 @@ pub use socket::{
 };
 
 /// The default available packet budget
-pub(crate) const DEFAULT_PACKET_BUDGET: u32 = 100;
+pub(crate) const DEFAULT_PACKET_BUDGET: u32 = 60;
 
 /// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
 ///
