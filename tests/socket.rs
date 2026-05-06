@@ -228,7 +228,7 @@ fn test_reordering_messages() {
 
 /// Test a continous message dialogue.
 /// This test in particular tests if sockets can handle large volumes of messages in less packets.
-/// 
+///
 /// TODO: Reordering must be implemented on a virtual layer. Re
 #[test]
 fn test_continuous_reliable_dialogue() {
@@ -242,7 +242,7 @@ fn test_continuous_reliable_dialogue() {
     sock_a.connect(sock_b.addr());
 
     // Let's throw some horrible numbers there
-    // set_message_reorder_chance(1.0); 
+    // set_message_reorder_chance(1.0);
     set_message_dublication_chance(1.0);
 
     const MESSAGE_LEN: usize = 220;
@@ -254,7 +254,6 @@ fn test_continuous_reliable_dialogue() {
 
         sock_a.send_to(&sock_b.addr(), &msg, Reliability::Reliable);
         sock_b.send_to(&sock_a.addr(), &msg, Reliability::Reliable);
-
     }
 
     // Poll them
@@ -262,7 +261,7 @@ fn test_continuous_reliable_dialogue() {
 
     let mut counter_a = 0;
     let mut counter_b = 0;
-    let mut tries_left = MESSAGES/4; // We should be able to receive everything with 4 times less packets 
+    let mut tries_left = MESSAGES / 4; // We should be able to receive everything with 4 times less packets 
 
     while tries_left > 0 {
         tries_left -= 1;

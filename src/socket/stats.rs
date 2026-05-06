@@ -125,10 +125,10 @@ impl RTTMeasurements {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
     use crate::assert_eq_eps;
+    use std::time::Duration;
 
-use super::*;
+    use super::*;
 
     #[test]
     fn test_measurements() {
@@ -137,12 +137,7 @@ use super::*;
         const DT: Duration = RTT_RECORD_FREQ;
         const EPS: f64 = 0.02;
 
-        let mut stats = RTTMeasurements::new(
-            RTT, 
-            DEV, 
-            0.8, 
-            20
-        );
+        let mut stats = RTTMeasurements::new(RTT, DEV, 0.8, 20);
 
         // By default there are no samples
         assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
@@ -167,13 +162,12 @@ use super::*;
             stats.update(DT);
             dbg!(stats.median());
         }
-        
+
         // No changes in median or deviation
         assert_eq_eps!(stats.rtt(), RTT.as_secs_f64(), EPS);
         assert_eq_eps!(stats.deviation(), DEV.as_secs_f64(), EPS);
         dbg!(stats.median());
         assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
-
 
         // Now we'll push and record two terrible latencies
         for _ in 0..2 {
@@ -182,10 +176,9 @@ use super::*;
         }
 
         // Our RTT must be drastically different, BUT, our median should stay the same, since according to history network's average
-        // was constantly 50ms. 
+        // was constantly 50ms.
         assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
         assert!(stats.rtt() > stats.median());
         assert!(stats.deviation() > DEV.as_secs_f64());
-
     }
 }
