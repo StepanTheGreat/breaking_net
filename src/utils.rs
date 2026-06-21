@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, ops::{Deref, DerefMut}};
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+};
 
 /// A utility polling macro (you can specify by how much to poll, how many times and which sockets)
 #[macro_export]
@@ -54,40 +57,45 @@ impl<T> Circular<T> {
     }
 }
 
-/// A `Cow`-like structure for arrays. 
-/// 
+/// A `Cow`-like structure for arrays.
+///
 /// When borrowed, borrows a slice, but when owned - allocates an array in a box
 pub enum ArrCow<'a, T>
-where T: Copy {
+where
+    T: Copy,
+{
     Borrowed(&'a [T]),
-    Boxed(Box<[T]>)
+    Boxed(Box<[T]>),
 }
 
 impl<'a, T> Deref for ArrCow<'a, T>
-where T: Copy {
+where
+    T: Copy,
+{
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Borrowed(value) => value,
-            Self::Boxed(value) => value
-        }    
+            Self::Boxed(value) => value,
+        }
     }
 }
 
 impl<'a, T> DerefMut for ArrCow<'a, T>
-where T: Copy {
+where
+    T: Copy,
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
-
         // If borrowed - copy data to a box
         if let Self::Borrowed(value) = self {
             *self = Self::Boxed(Box::from_iter(value.iter().copied()));
         }
-        
+
         match self {
             Self::Boxed(value) => value,
-            Self::Borrowed(_) => unreachable!()
-        }    
+            Self::Borrowed(_) => unreachable!(),
+        }
     }
 }
 

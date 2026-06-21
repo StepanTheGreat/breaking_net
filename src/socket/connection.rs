@@ -85,7 +85,7 @@ impl SocketConnection {
         // Poll our sender
         self.sender.poll(
             SendContext {
-                socket: socket,
+                socket,
                 packet_builder: crate_builder,
                 recv_packet_window: self.receiver.received_packets(),
             },

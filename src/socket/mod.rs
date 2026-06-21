@@ -1,10 +1,10 @@
 use std::{
+    any::Any,
     collections::{HashMap, VecDeque},
     fmt::Debug,
     io,
     net::{self, SocketAddr},
     time::Duration,
-    any::Any
 };
 
 mod backend;
@@ -88,7 +88,7 @@ impl Default for SocketOptions {
             packets_per_second: DEFAULT_PACKET_BUDGET,
 
             #[cfg(feature = "stress_testing")]
-            virtual_socket: false
+            virtual_socket: false,
         }
     }
 }
@@ -121,7 +121,10 @@ impl Socket {
         } else {
             Box::new(socket)
         };
-            
+
+        // In any other case use a normal socket
+        #[cfg(not(feature = "stress_testing"))]
+        let socket = Box::new(socket);
 
         Ok(Self {
             socket,
@@ -345,20 +348,20 @@ impl Socket {
     /// Whether this socket is virtual. Only ever useful in stress testing
     #[cfg(feature = "stress_testing")]
     pub fn is_virtual(&self) -> bool {
-        (self.socket.as_ref() as &dyn Any).downcast_ref::<VirtSocketUDP>()
+        (self.socket.as_ref() as &dyn Any)
+            .downcast_ref::<VirtSocketUDP>()
             .is_some()
-    } 
+    }
 
     /// Retrieve a mutable reference to this socket's virtual settings when stress testing
     #[cfg(feature = "stress_testing")]
     pub fn virtual_settings(&mut self) -> &mut VirtSettings {
-
         assert!(self.is_virtual(), "The socket isn't virtual");
 
-        (self.socket.as_mut() as &mut dyn Any).downcast_mut::<VirtSocketUDP>()
+        (self.socket.as_mut() as &mut dyn Any)
+            .downcast_mut::<VirtSocketUDP>()
             .unwrap()
             .settings_mut()
-            
     }
 
     /// Clear the event queue. Super useful if you wish to ignore events

@@ -2,10 +2,7 @@ use socket2 as sock;
 
 use std::{any::Any, io, mem::MaybeUninit, net, time::Duration};
 
-use crate::{
-    PROTOCOL_SIGNATURE, SocketOptions,
-    crc32::CRC32,
-};
+use crate::{PROTOCOL_SIGNATURE, SocketOptions, crc32::CRC32};
 
 /// A socket backend that can be used in conjunction with the high-level socket.
 ///
@@ -23,7 +20,6 @@ pub trait SocketBackend: Any {
 
     /// Get this socket's bound address
     fn addr(&self) -> net::SocketAddr;
-
 
     /// Does this socket have any messages?
     ///
@@ -69,7 +65,7 @@ impl SocketUDP {
             .expect("The socket is bound")
             .as_socket()
             .unwrap();
-        
+
         let crc = CRC32::new(mtu, *PROTOCOL_SIGNATURE);
 
         Ok(Self {
@@ -87,10 +83,9 @@ impl SocketUDP {
 
 impl SocketBackend for SocketUDP {
     fn send_to(&mut self, data: &[u8], to: net::SocketAddr) -> io::Result<()> {
-
         let signed_data = match self.crc.sign(data) {
             Some(data) => data,
-            None => return Err(io::Error::other("Reached socket's MTU limits"))
+            None => return Err(io::Error::other("Reached socket's MTU limits")),
         };
 
         match self.socket.send_to(signed_data, &to.into()) {

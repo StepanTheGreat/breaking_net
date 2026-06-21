@@ -12,10 +12,14 @@ const DT: Duration = Duration::from_millis(33);
 
 /// A mini constructor that automatically creates virtual sockets
 fn make_socket(addr: net::SocketAddr) -> Socket {
-    Socket::new_ex(addr, SocketOptions {
-        virtual_socket: true,
-        ..Default::default()
-    }).unwrap()
+    Socket::new_ex(
+        addr,
+        SocketOptions {
+            virtual_socket: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
 }
 
 #[test]
@@ -112,8 +116,7 @@ fn test_corruption_detection() {
     assert!(sock_b.recv_from().is_some());
 
     // Guarantee corruption
-    sock_a.virtual_settings()
-        .set_corruption_rate(1.0);
+    sock_a.virtual_settings().set_corruption_rate(1.0);
 
     // Send our message
     sock_a.send_to(&sock_b.addr(), msg, rel);
@@ -134,8 +137,7 @@ fn test_reliable_messages() {
     let rel = Reliability::Reliable;
 
     // Guarantee message loss
-    sock_a.virtual_settings()
-        .set_packet_loss_rate(1.0);
+    sock_a.virtual_settings().set_packet_loss_rate(1.0);
 
     // Connect them
     sock_a.connect(sock_b.addr());
@@ -149,8 +151,7 @@ fn test_reliable_messages() {
     assert!(!sock_b.has_messages());
 
     // Drop our message loss
-    sock_a.virtual_settings()
-        .set_packet_loss_rate(0.0);
+    sock_a.virtual_settings().set_packet_loss_rate(0.0);
 
     // Poll 10 times
     poll_socks!(10, DT, [sock_a, sock_b]);
@@ -235,16 +236,17 @@ fn test_continuous_reliable_dialogue() {
     sock_a.connect(sock_b.addr());
 
     // Let's throw some horrible numbers there
-    sock_b.virtual_settings()
+    sock_b
+        .virtual_settings()
         .set_dublicate_rate(1.0)
         .set_latency(Duration::from_millis(15))
         .set_jitter(Duration::from_millis(5));
 
-    sock_a.virtual_settings()
+    sock_a
+        .virtual_settings()
         .set_dublicate_rate(1.0)
         .set_latency(Duration::from_millis(15))
         .set_jitter(Duration::from_millis(5));
-    
 
     const MESSAGE_LEN: usize = 220;
     const MESSAGES: u8 = 255;

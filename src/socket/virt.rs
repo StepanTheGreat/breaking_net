@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr, time::Duration};
 
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-use crate::{socket::{SocketBackend, SocketUDP}};
+use crate::socket::{SocketBackend, SocketUDP};
 
 fn is_valid_chance(chance: f32) -> bool {
     (0.0..=1.0).contains(&chance)
@@ -22,7 +22,7 @@ pub struct VirtSettings {
     latency: Duration,
     jitter: Duration,
     corruption_rate: f32,
-    dublicate_rate: f32,    
+    dublicate_rate: f32,
 }
 
 impl Default for VirtSettings {
@@ -72,7 +72,7 @@ impl VirtSettings {
         self
     }
 
-    /// What's the average jitter added to the arrival latency 
+    /// What's the average jitter added to the arrival latency
     pub fn set_jitter(&mut self, val: Duration) -> &mut Self {
         self.jitter = val;
 
@@ -81,7 +81,7 @@ impl VirtSettings {
 }
 
 /// A UDP socket with added simulation features (latency, packet loss and so on).
-/// 
+///
 /// Neccessary for simulations and tests
 pub struct VirtSocketUDP {
     socket: SocketUDP,
@@ -92,7 +92,7 @@ pub struct VirtSocketUDP {
     packets: Vec<(Box<[u8]>, SocketAddr, Duration)>,
 
     /// A temporary buffer for packet removals
-    remove_buff: Vec<usize>
+    remove_buff: Vec<usize>,
 }
 
 impl VirtSocketUDP {
@@ -105,7 +105,7 @@ impl VirtSocketUDP {
             time: Duration::ZERO,
             packets: Vec::new(),
 
-            remove_buff: Vec::new()
+            remove_buff: Vec::new(),
         }
     }
 
@@ -132,7 +132,7 @@ impl SocketBackend for VirtSocketUDP {
                 self.remove_buff.push(ind);
             }
         }
-        
+
         // If so, remove it and send
         for ind in self.remove_buff.iter().copied().rev() {
             let (packet, addr, _) = self.packets.remove(ind);
@@ -153,23 +153,28 @@ impl SocketBackend for VirtSocketUDP {
         if rand_chance(&mut self.rng, self.settings.packet_loss_rate) {
             return Ok(());
         }
-        
+
         // We'll simply inverse data if it's supposed to get "corrupted"
         if rand_chance(&mut self.rng, self.settings.corruption_rate) {
             data.reverse();
         }
 
         // We may send the same packet twice
-        let times = if rand_chance(&mut self.rng, self.settings.dublicate_rate) { 2 } else { 1 };
+        let times = if rand_chance(&mut self.rng, self.settings.dublicate_rate) {
+            2
+        } else {
+            1
+        };
 
         for _ in 0..times {
-
-
             // Compute packet arrival time
             let arrival_time = self.time + self.settings.latency;
 
             // Compute the jitter. It can absolutely be negative, which is why we might actually subtract it from our time
-            let jitter = self.settings.jitter.mul_f32(self.rng.random_range(0.0..=1.0));
+            let jitter = self
+                .settings
+                .jitter
+                .mul_f32(self.rng.random_range(0.0..=1.0));
             let arrival_time = if rand_chance(&mut self.rng, 0.5) {
                 arrival_time.saturating_add(jitter)
             } else {

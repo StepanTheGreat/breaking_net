@@ -132,16 +132,16 @@ pub struct CRC32 {
 impl CRC32 {
     /// Create a new CRC32 instance. Do mind that this structure doesn't allocate more than provided `mtu`, so with a buffer
     /// of size 1500, your real capacity will always be 1496, since the remaining bytes will be taken by the signature.
-    pub fn new(mtu: usize, signature: &'static str) -> Self {        
+    pub fn new(mtu: usize, signature: &'static str) -> Self {
         Self {
             signature,
             mtu,
-            buffer: vec![0u8; mtu].into_boxed_slice()
+            buffer: vec![0u8; mtu].into_boxed_slice(),
         }
     }
 
     /// Sign the provided data.
-    /// 
+    ///
     /// Returns [None] if the data's length exceeds buffer's + signature length (`MTU-signature_size`)
     pub fn sign(&mut self, data: &[u8]) -> Option<&[u8]> {
         if data.len() > self.mtu - CRC32_SIG_LEN {
