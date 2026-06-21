@@ -4,6 +4,7 @@ use std::{
     io,
     net::{self, SocketAddr},
     time::Duration,
+    any::Any
 };
 
 mod backend;
@@ -14,14 +15,17 @@ mod stats;
 mod receiver;
 mod sender;
 
+#[cfg(feature = "stress_testing")]
+mod virt;
+
 pub use backend::SocketBackend;
 pub(crate) use backend::SocketUDP;
 
 #[cfg(feature = "stress_testing")]
-pub use backend::{
-    reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,
-    set_message_loss_chance, set_message_reorder_chance,
-};
+use crate::socket::virt::VirtSocketUDP;
+
+#[cfg(feature = "stress_testing")]
+pub use crate::socket::virt::VirtSettings;
 
 use crate::{
     DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE,
@@ -69,6 +73,10 @@ pub struct SocketOptions {
 
     /// Packet budget per second. Depends highly on application
     pub packets_per_second: u32,
+
+    /// Whether the socket to use should be virtual
+    #[cfg(feature = "stress_testing")]
+    pub virtual_socket: bool,
 }
 
 #[allow(clippy::derivable_impls, reason = "Keeping for explicitness")]
@@ -78,6 +86,9 @@ impl Default for SocketOptions {
             broadcaster: false,
             reuses_address: false,
             packets_per_second: DEFAULT_PACKET_BUDGET,
+
+            #[cfg(feature = "stress_testing")]
+            virtual_socket: false
         }
     }
 }
@@ -103,8 +114,17 @@ impl Socket {
         // By default our default socket is always UDP
         let socket = SocketUDP::new_ex(addr, MTU_SIZE_PRIVATE, &options)?;
 
+        // In case we're stress testing, we'll create a virtual socket instead
+        #[cfg(feature = "stress_testing")]
+        let socket: Box<dyn SocketBackend> = if options.virtual_socket {
+            Box::new(VirtSocketUDP::new(socket, VirtSettings::default()))
+        } else {
+            Box::new(socket)
+        };
+            
+
         Ok(Self {
-            socket: Box::new(socket),
+            socket,
             options,
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
@@ -266,6 +286,9 @@ impl Socket {
 
     /// Poll this socket thus updating its inner receive buffer and sending data.
     pub fn poll(&mut self, dt: Duration) {
+        // Poll our socket
+        self.socket.poll(dt);
+
         // We're going to collect all messages received by this socket
         self.receive_messages(dt);
 
@@ -317,6 +340,25 @@ impl Socket {
             self.event_queue.push_back(SocketEvent::Disconnection(addr));
             let _ = self.connections.remove(&addr);
         }
+    }
+
+    /// Whether this socket is virtual. Only ever useful in stress testing
+    #[cfg(feature = "stress_testing")]
+    pub fn is_virtual(&self) -> bool {
+        (self.socket.as_ref() as &dyn Any).downcast_ref::<VirtSocketUDP>()
+            .is_some()
+    } 
+
+    /// Retrieve a mutable reference to this socket's virtual settings when stress testing
+    #[cfg(feature = "stress_testing")]
+    pub fn virtual_settings(&mut self) -> &mut VirtSettings {
+
+        assert!(self.is_virtual(), "The socket isn't virtual");
+
+        (self.socket.as_mut() as &mut dyn Any).downcast_mut::<VirtSocketUDP>()
+            .unwrap()
+            .settings_mut()
+            
     }
 
     /// Clear the event queue. Super useful if you wish to ignore events

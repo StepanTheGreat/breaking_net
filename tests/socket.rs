@@ -10,13 +10,18 @@ const ADDR_B: net::SocketAddr = socket_addr!(localhost; 0);
 // 30 times per second
 const DT: Duration = Duration::from_millis(33);
 
+/// A mini constructor that automatically creates virtual sockets
+fn make_socket(addr: net::SocketAddr) -> Socket {
+    Socket::new_ex(addr, SocketOptions {
+        virtual_socket: true,
+        ..Default::default()
+    }).unwrap()
+}
+
 #[test]
 fn test_basic_sockets() {
-    // Before each test we should ensure to first reset the stress environment settings
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     // We're going to send 4 messages to each other
     let msgs: [&[u8]; _] = [b"Hello", b" ", b"World", b"!"];
@@ -64,10 +69,8 @@ fn test_basic_sockets() {
 
 #[test]
 fn test_mtu_limits() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     // We're going to send 1 large message itilizing ALL our MTU capacity
     let message = &[0u8; MTU_SIZE];
@@ -93,10 +96,8 @@ fn test_mtu_limits() {
 
 #[test]
 fn test_corruption_detection() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     let msg = b"Hi";
     let rel = Reliability::Unreliable;
@@ -111,7 +112,8 @@ fn test_corruption_detection() {
     assert!(sock_b.recv_from().is_some());
 
     // Guarantee corruption
-    set_message_corruption_chance(1.0);
+    sock_a.virtual_settings()
+        .set_corruption_rate(1.0);
 
     // Send our message
     sock_a.send_to(&sock_b.addr(), msg, rel);
@@ -125,16 +127,15 @@ fn test_corruption_detection() {
 
 #[test]
 fn test_reliable_messages() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     let msg = b"Hello";
     let rel = Reliability::Reliable;
 
     // Guarantee message loss
-    set_message_loss_chance(1.0);
+    sock_a.virtual_settings()
+        .set_packet_loss_rate(1.0);
 
     // Connect them
     sock_a.connect(sock_b.addr());
@@ -148,7 +149,8 @@ fn test_reliable_messages() {
     assert!(!sock_b.has_messages());
 
     // Drop our message loss
-    set_message_loss_chance(0.0);
+    sock_a.virtual_settings()
+        .set_packet_loss_rate(0.0);
 
     // Poll 10 times
     poll_socks!(10, DT, [sock_a, sock_b]);
@@ -162,15 +164,13 @@ fn test_reliable_messages() {
 
 #[test]
 fn test_deduplication_messages() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     let msg = b"Hello";
 
     // Guarantee message loss
-    set_message_dublication_chance(1.0);
+    sock_a.virtual_settings().set_dublicate_rate(1.0);
 
     // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
@@ -191,16 +191,13 @@ fn test_deduplication_messages() {
 
 #[test]
 fn test_reordering_messages() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     let msgs: &[&[u8]] = &[b"Hello", b" ", b"World", b"!"];
 
     // Let's throw some horrible numbers there
-    set_message_reorder_chance(1.0);
-    set_message_dublication_chance(1.0);
+    sock_a.virtual_settings().set_dublicate_rate(1.0);
 
     // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
@@ -228,22 +225,26 @@ fn test_reordering_messages() {
 
 /// Test a continous message dialogue.
 /// This test in particular tests if sockets can handle large volumes of messages in less packets.
-///
-/// TODO: Reordering must be implemented on a virtual layer. Re
 #[test]
 fn test_continuous_reliable_dialogue() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     // First we're going to connect them together
     sock_b.connect(sock_a.addr());
     sock_a.connect(sock_b.addr());
 
     // Let's throw some horrible numbers there
-    // set_message_reorder_chance(1.0);
-    set_message_dublication_chance(1.0);
+    sock_b.virtual_settings()
+        .set_dublicate_rate(1.0)
+        .set_latency(Duration::from_millis(15))
+        .set_jitter(Duration::from_millis(5));
+
+    sock_a.virtual_settings()
+        .set_dublicate_rate(1.0)
+        .set_latency(Duration::from_millis(15))
+        .set_jitter(Duration::from_millis(5));
+    
 
     const MESSAGE_LEN: usize = 220;
     const MESSAGES: u8 = 255;
@@ -291,10 +292,8 @@ fn test_continuous_reliable_dialogue() {
 /// Test if heartbeat
 #[test]
 fn test_heartbeat() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     // First we're going to connect them together
     sock_b.connect(sock_a.addr());
@@ -327,10 +326,8 @@ fn test_heartbeat() {
 /// Test round trip calculations
 #[test]
 fn test_round_trip_time() {
-    reset_stress_environment();
-
-    let mut sock_a = Socket::new(ADDR_A).unwrap();
-    let mut sock_b = Socket::new(ADDR_B).unwrap();
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
 
     // First we're going to connect them together
     sock_b.connect(sock_a.addr());

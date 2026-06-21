@@ -406,24 +406,6 @@ impl SendManager {
                 candidates.push_front(message);
             }
         }
-
-        // TODO: This breaks internal protocol logic (strict order). This MUST be implemented on a virtual low-level socket instead
-        #[cfg(feature = "stress_testing")]
-        {
-            use crate::socket::backend::should_reorder_messages;
-
-            if should_reorder_messages() {
-                use rand::seq::SliceRandom;
-
-                use crate::socket::backend::RNG_STATE;
-
-                let (a, b) = candidates.as_mut_slices();
-
-                // All this ugly code to essentially simply shuffle the message queue
-                RNG_STATE.with(|rng| a.shuffle(&mut *rng.borrow_mut()));
-                RNG_STATE.with(|rng| b.shuffle(&mut *rng.borrow_mut()));
-            }
-        }
     }
 
     /// A separate polling method that specialises in sending messages

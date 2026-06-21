@@ -53,7 +53,7 @@ const fn crc32_table() -> [u32; 256] {
 /// Instead, you separately compute a checksum of your received binary, and ONLY THEN you check this checksum against the one you received.
 ///
 /// In case we get `[checksum][data]`, we must separately verify that `crc32(&data) == checksum`.
-pub fn crc32_multi(data_slices: &[&[u8]]) -> u32 {
+fn crc32_multi(data_slices: &[&[u8]]) -> u32 {
     // The initialisation value used in the IEEE CRC32 implementation
     const INIT: u32 = 0xFFFFFFFF;
 
@@ -75,14 +75,9 @@ pub fn crc32_multi(data_slices: &[&[u8]]) -> u32 {
     remainder ^ INIT
 }
 
-/// The same as [crc32_multi], but for singular slices
-pub fn crc32(data: &[u8]) -> u32 {
-    crc32_multi(&[data])
-}
-
 /// Verify the CRC32 signed data slice. This expects data in the specified format:
 /// `[..data][4 crc32 bytes]`
-pub fn crc32_verify(data: &[u8], signature: Option<&str>) -> bool {
+fn crc32_verify(data: &[u8], signature: Option<&str>) -> bool {
     if data.len() < CRC32_SIG_LEN {
         // Can't fit the CRC signature - automatically fail
         return false;
@@ -123,9 +118,76 @@ pub fn crc32_sign(data: &mut [u8], signature: Option<&str>) {
     data[data_len..data_crc_len].copy_from_slice(&crc_bytes);
 }
 
+/// A CRC32 sign/verification structure. It's particularly useful as a component for signing/verifying arbitrary data.
+pub struct CRC32 {
+    /// Protocol's signature
+    signature: &'static str,
+
+    mtu: usize,
+
+    // Temporary buffer for write operations
+    buffer: Box<[u8]>,
+}
+
+impl CRC32 {
+    /// Create a new CRC32 instance. Do mind that this structure doesn't allocate more than provided `mtu`, so with a buffer
+    /// of size 1500, your real capacity will always be 1496, since the remaining bytes will be taken by the signature.
+    pub fn new(mtu: usize, signature: &'static str) -> Self {        
+        Self {
+            signature,
+            mtu,
+            buffer: vec![0u8; mtu].into_boxed_slice()
+        }
+    }
+
+    /// Sign the provided data.
+    /// 
+    /// Returns [None] if the data's length exceeds buffer's + signature length (`MTU-signature_size`)
+    pub fn sign(&mut self, data: &[u8]) -> Option<&[u8]> {
+        if data.len() > self.mtu - CRC32_SIG_LEN {
+            // Too much data, can't fit a signature
+            return None;
+        }
+
+        let data_len = data.len();
+        let data_crc_len = data_len + CRC32_SIG_LEN;
+
+        // Copy the message to our buffer
+        self.buffer[..data_len].copy_from_slice(data);
+
+        // Sign it
+        crc32_sign(&mut self.buffer[..data_crc_len], Some(self.signature));
+
+        // Augment our data slice to account for our new signature
+        Some(&self.buffer[..data_crc_len])
+    }
+
+    /// Validate the provided data and return [Some] if the data passed the signature check
+    pub fn validate<'a>(&self, data: &'a [u8]) -> Option<&'a [u8]> {
+        // We received less bytes than our CRC signature
+        if data.len() < CRC32_SIG_LEN {
+            return None;
+        }
+
+        // Signature mismatch, early return
+        if !crc32_verify(data, Some(self.signature)) {
+            return None;
+        }
+
+        // Read everything excluding the signature
+        let data_len = data.len() - CRC32_SIG_LEN;
+
+        Some(&data[..data_len])
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{crc32, crc32_multi};
+    use super::crc32_multi;
+
+    fn crc32(data: &[u8]) -> u32 {
+        crc32_multi(&[data])
+    }
 
     /// A super minimal crc32 test
     #[test]

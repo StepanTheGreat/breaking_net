@@ -15,10 +15,7 @@ pub use packet::Reliability;
 pub use socket::{ReceivedMessage, Socket, SocketEvent, SocketOptions};
 
 #[cfg(feature = "stress_testing")]
-pub use socket::{
-    reset_stress_environment, set_message_corruption_chance, set_message_dublication_chance,
-    set_message_loss_chance, set_message_reorder_chance,
-};
+pub use socket::VirtSettings;
 
 /// The default available packet budget
 pub(crate) const DEFAULT_PACKET_BUDGET: u32 = 60;
