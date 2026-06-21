@@ -89,7 +89,10 @@ pub struct VirtSocketUDP {
     rng: SmallRng,
 
     time: Duration,
-    packets: Vec<(Box<[u8]>, SocketAddr, Duration)>
+    packets: Vec<(Box<[u8]>, SocketAddr, Duration)>,
+
+    /// A temporary buffer for packet removals
+    remove_buff: Vec<usize>
 }
 
 impl VirtSocketUDP {
@@ -100,7 +103,9 @@ impl VirtSocketUDP {
             rng: SmallRng::from_os_rng(),
 
             time: Duration::ZERO,
-            packets: Vec::new()
+            packets: Vec::new(),
+
+            remove_buff: Vec::new()
         }
     }
 
@@ -121,20 +126,20 @@ impl SocketBackend for VirtSocketUDP {
     fn poll(&mut self, dt: Duration) {
         self.time += dt;
 
-        let mut to_send = Vec::with_capacity(8);
-
         // Check if a packet can be sent
         for (ind, (_, _, time)) in self.packets.iter().enumerate() {
-            if *time >= self.time {
-                to_send.push(ind);
+            if self.time >= *time {
+                self.remove_buff.push(ind);
             }
         }
         
         // If so, remove it and send
-        for ind in to_send.into_iter().rev() {
+        for ind in self.remove_buff.iter().copied().rev() {
             let (packet, addr, _) = self.packets.remove(ind);
             let _ = self.socket.send_to(&packet, addr);
         }
+
+        self.remove_buff.clear();
     }
 
     fn recv_from(&mut self) -> Option<(&[u8], SocketAddr)> {
@@ -155,8 +160,10 @@ impl SocketBackend for VirtSocketUDP {
         }
 
         // We may send the same packet twice
-        let times = if rand_chance(&mut self.rng, self.settings.dublicate_rate) { 1 } else { 2 };
+        let times = if rand_chance(&mut self.rng, self.settings.dublicate_rate) { 2 } else { 1 };
+
         for _ in 0..times {
+
 
             // Compute packet arrival time
             let arrival_time = self.time + self.settings.latency;
@@ -172,6 +179,8 @@ impl SocketBackend for VirtSocketUDP {
             self.packets.push((data.clone(), to, arrival_time));
         }
 
+        // This is done to avoid waiting for another cycle to actually send packets via sockets
+        self.poll(Duration::ZERO);
 
         Ok(())
     }
