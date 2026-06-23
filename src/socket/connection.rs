@@ -1,13 +1,9 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability,
-    packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
-    socket::{
-        SocketBackend,
-        receiver::ReceiveManager,
-        sender::{SendContext, SendManager},
-    },
+    Reliability, packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage}, socket::{
+        SocketBackend, receiver::ReceiveManager, sender::{SendContext, SendManager}, stats::{AdvancedConnectionStats, ConnectionStats},
+    }, utils::Circular,
 };
 
 /// After how many seconds to time out without receiving any packets
@@ -24,6 +20,8 @@ pub struct SocketConnection {
     last_hearbeat: Duration,
 
     time: Duration,
+
+    advanced_stats: Circular<AdvancedConnectionStats>
 }
 
 impl SocketConnection {
@@ -38,6 +36,7 @@ impl SocketConnection {
             receiver,
             time,
             last_hearbeat: time + HEARBEAT_TIMEOUT,
+            advanced_stats: Circular::new(10)
         }
     }
 
@@ -87,15 +86,16 @@ impl SocketConnection {
             SendContext {
                 socket,
                 packet_builder: crate_builder,
-                recv_packet_window: self.receiver.received_packets(),
+                recv_packet_window: self.receiver.received_packets_window(),
             },
             self.time,
         );
     }
 
-    /// Mark this recipient's sent packet as received
-    pub fn mark_received_packet_id(&mut self, packet: PacketSeqId) {
-        self.receiver.mark_received_packet_id(packet);
+    /// Mark this recipient's sent packet as received.
+    /// We're expecting its length for statistics only.
+    pub fn mark_received_packet_id(&mut self, packet: PacketSeqId, len: usize) {
+        self.receiver.mark_received_packet_id(packet, len);
     }
 
     /// Process the provided message (by filtering it out)
@@ -117,16 +117,45 @@ impl SocketConnection {
         self.to
     }
 
+    /// Reset all immediate statistics. Should be called once after each poll.
+    pub fn reset_immediate_stats(&mut self) {
+        self.receiver.reset_immediate_stats();
+        self.sender.reset_immediate_stats();
+    }
+
+    pub fn record_immediate_stats(&mut self) {
+        self.advanced_stats.push(self.advanced_statistics());
+    }
+
     /// Check if this connection has timed out (no packets received)
     pub fn timed_out(&self) -> bool {
         self.last_hearbeat <= self.time
     }
 
-    pub fn rtt(&self) -> f64 {
-        self.sender.rtt()
+    /// Get a complete snapshot of all the statistics of this connection
+    pub fn statistics(&self) -> ConnectionStats {
+        ConnectionStats {
+            rtt: self.sender.rtt(),
+            median_rtt: self.sender.base_rtt(),
+            packet_loss: self.sender.packet_loss(),
+            jitter: self.sender.rtt_deviation()
+        }
     }
 
-    pub fn packet_loss(&self) -> f64 {
-        self.sender.packet_loss()
+    /// Advanced statistics (that record everything during a single poll)
+    pub fn advanced_statistics(&self) -> AdvancedConnectionStats {
+        AdvancedConnectionStats {
+            queued_messages: self.sender.queued_messages(),
+            packets_sent: self.sender.packets_sent(),
+            bytes_sent: self.sender.bytes_sent(),
+            dublicates_received: self.receiver.dublicates_received(),
+            packets_received: self.receiver.packets_received(),
+            bytes_received: self.receiver.bytes_received(),
+            packets_lost: self.sender.packets_lost()
+        }
+    }
+
+    pub fn avg_advanced_statistics(&self) -> AdvancedConnectionStats {
+        self.advanced_stats.average()
     }
 }

@@ -18,6 +18,7 @@ mod sender;
 #[cfg(feature = "stress_testing")]
 mod virt;
 
+pub use stats::{ConnectionStats, AdvancedConnectionStats};
 pub use backend::SocketBackend;
 pub(crate) use backend::SocketUDP;
 
@@ -28,9 +29,7 @@ use crate::socket::virt::VirtSocketUDP;
 pub use crate::socket::virt::VirtSettings;
 
 use crate::{
-    DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE,
-    packet::{PacketCrate, PacketCrateBuilder, Reliability},
-    socket_addr,
+    DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr,
 };
 
 use connection::SocketConnection;
@@ -231,7 +230,7 @@ impl Socket {
 
             // If this is a message from a known connection
             if let Some(conn) = connection.as_mut() {
-                conn.mark_received_packet_id(pcrate.seq_id);
+                conn.mark_received_packet_id(pcrate.seq_id, data.len());
 
                 // let it mark all the acknowledgments it needs
                 conn.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map);
@@ -255,6 +254,20 @@ impl Socket {
                     });
                 }
             }
+        }
+    }
+
+    /// Reset our connections' immediate statistics. This must be done right at the start of each poll.
+    fn reset_connections_immediate_stats(&mut self) {
+        for (_, connection) in self.connections.iter_mut() {
+            connection.reset_immediate_stats();
+        }
+    }
+
+    /// Record our connections' immediate statistics. This must be done at the end of each poll.
+    fn record_connections_immediate_stats(&mut self) {
+        for (_, connection) in self.connections.iter_mut() {
+            connection.record_immediate_stats();
         }
     }
 
@@ -292,11 +305,17 @@ impl Socket {
         // Poll our socket
         self.socket.poll(dt);
 
+        // We should reset all our connections' immediate statistics
+        self.reset_connections_immediate_stats();
+
         // We're going to collect all messages received by this socket
         self.receive_messages(dt);
 
         // Now, we're going to poll each connection individually as well
         self.poll_connections(dt);
+
+        // Record all immediate statistics
+        self.record_connections_immediate_stats();
     }
 
     /// Try receive a message (if there is any)
@@ -379,14 +398,19 @@ impl Socket {
         self.message_queue.len()
     }
 
-    /// Retrieve Round Trip Time for the provided connection (if one exists)
-    pub fn rtt_for(&self, addr: &SocketAddr) -> Option<f64> {
-        self.connections.get(addr).map(|c| c.rtt())
+    /// Retrieve all average statistics for this connection (if present)
+    pub fn statistics_for(&self, addr: &SocketAddr) -> Option<ConnectionStats> {
+        self.connections.get(addr).map(|c| c.statistics())
     }
 
-    /// Retrieve packet loss (between 0 and 1) for the provided connection (if one exists)
-    pub fn packet_loss_for(&self, addr: &SocketAddr) -> Option<f64> {
-        self.connections.get(addr).map(|c| c.packet_loss())
+    /// Retrieve all advanced statistics for this connection (if present)
+    pub fn advanced_statistics_for(&self, addr: &SocketAddr) -> Option<AdvancedConnectionStats> {
+        self.connections.get(addr).map(|c| c.advanced_statistics())
+    }
+
+    /// Retrieve all advanced statistics for this connection (averaged)
+    pub fn avg_advanced_statistics_for(&self, addr: &SocketAddr) -> Option<AdvancedConnectionStats> {
+        self.connections.get(addr).map(|c| c.avg_advanced_statistics())
     }
 }
 

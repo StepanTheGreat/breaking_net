@@ -2,13 +2,10 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    Reliability,
-    packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
-    socket::{
+    Reliability, packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map}, socket::{
         SocketBackend,
         stats::{Ema, RTTMeasurements},
-    },
-    window::SlidingAckWindow,
+    }, window::SlidingAckWindow,
 };
 
 /// At worst, resend every 30 seconds (limit exponential back-off)
@@ -70,6 +67,9 @@ struct PacketWindow {
 
     /// EMA packet loss, useful for general statistics
     packet_loss: Ema,
+
+    /// How many packets have we lost since the last poll
+    packets_lost: usize
 }
 
 impl PacketWindow {
@@ -82,6 +82,7 @@ impl PacketWindow {
             force_slide_time: time + safe_packet_rtt(rtt.rtt(), rtt.deviation()),
 
             packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
+            packets_lost: 0
         }
     }
 
@@ -115,6 +116,7 @@ impl PacketWindow {
     fn mark_packet_status(&mut self, lost: bool) {
         // We're taking the inverse, so lost = 0, not = 1
         self.packet_loss.push((!lost) as u8 as f64);
+        self.packets_lost += 1;
     }
 
     fn slide(&mut self, sent_messages: &SlidingAckWindow, rtt: &RTTMeasurements) {
@@ -208,13 +210,22 @@ impl PacketWindow {
         }
     }
 
+    pub fn reset_immediate_stats(&mut self) {
+        self.packets_lost = 0;
+    }
+
     pub fn window_position(&self) -> PacketSeqId {
         self.pos
     }
 
-    /// Get current packet loss
+    /// Get current packet loss (from 0 to 1)
     pub fn packet_loss(&self) -> f64 {
         self.packet_loss.get()
+    }
+
+    /// How many packets were lost during the last poll
+    pub fn packets_lost(&self) -> usize {
+        self.packets_lost
     }
 }
 
@@ -336,6 +347,12 @@ pub struct SendManager {
 
     rtt: RTTMeasurements,
 
+    /// How many packets have we sent during the last poll
+    packets_sent: usize,
+
+    /// How many bytes have we sent during the last poll
+    bytes_sent: usize,
+
     /// Time should be managed differently
     time: Duration,
 }
@@ -352,6 +369,8 @@ impl SendManager {
             message_queue: VecDeque::new(),
             sent_message_window: SlidingAckWindow::new(64),
             sent_packet_window: PacketWindow::new(time, &rtt, 64),
+            packets_sent: 0,
+            bytes_sent: 0,
             rtt,
             time,
         }
@@ -513,6 +532,10 @@ impl SendManager {
             let data = crate_builder.build();
             let _ = socket.send_to(data, self.to);
 
+            // Update our immediate statistics
+            self.packets_sent += 1;
+            self.bytes_sent += data.len();
+
             // Decrement the amount of packets we got (and disable ack-only packets)
             available_packets -= 1;
             available_ack_only_packet = false;
@@ -530,6 +553,7 @@ impl SendManager {
                 self.message_queue.push_front(message);
             }
         }
+
     }
 
     /// Compute an approximatee packet budget based of the current network conditions and delta time
@@ -586,6 +610,12 @@ impl SendManager {
         }
     }
 
+    pub fn reset_immediate_stats(&mut self) {
+        self.sent_packet_window.reset_immediate_stats();
+        self.packets_sent = 0;
+        self.bytes_sent = 0;
+    }
+
     /// Poll the send manager (this will send all the queued messages)
     pub fn poll(&mut self, ctx: SendContext, time: Duration) {
         // Compute delta (important for PPS calculation)
@@ -615,5 +645,25 @@ impl SendManager {
     /// Get current packet loss
     pub fn packet_loss(&self) -> f64 {
         self.sent_packet_window.packet_loss()
+    }
+
+    /// How many messages are currently queued for resending
+    pub fn queued_messages(&self) -> usize {
+        self.message_queue.len()
+    }
+
+    /// How many packets have we sent
+    pub fn packets_sent(&self) -> usize {
+        self.packets_sent
+    }
+
+    /// How many bytes have we sent
+    pub fn bytes_sent(&self) -> usize {
+        self.bytes_sent
+    }
+
+    /// How many packets have we lost
+    pub fn packets_lost(&self) -> usize {
+        self.sent_packet_window.packets_lost()
     }
 }

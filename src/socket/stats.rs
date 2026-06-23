@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{ops::Add, time::Duration};
 
-use crate::utils::Circular;
+use crate::utils::{Averageable, Circular};
 
 // We'll keep it at 500ms
 const RTT_RECORD_FREQ: Duration = Duration::from_millis(500);
@@ -121,6 +121,82 @@ impl RTTMeasurements {
             (a + b) / 2.0
         }
     }
+}
+
+/// Various advanced immediate information about the connection. In most cases you should only collect [ConnectionStats], these ones are only 
+/// useful for testing and real-time profiling.
+/// 
+/// All the samples in this structure are reset and collected every single frame.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct AdvancedConnectionStats {
+    /// The amount of messages sitting in a queue
+    pub queued_messages: usize,
+
+    /// How many packets were sent
+    pub packets_sent: usize,
+
+    /// How many packets were received
+    pub packets_received: usize,
+
+    /// How many bytes were sent
+    pub bytes_sent: usize,
+
+    /// How many bytes were received
+    pub bytes_received: usize,
+
+    /// How many dublicates have we received from another connection
+    pub dublicates_received: usize,
+
+    /// How many packets have we considered lost 
+    pub packets_lost: usize
+}
+
+impl Add for AdvancedConnectionStats {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Self {
+            queued_messages: self.queued_messages + other.queued_messages,
+            packets_received: self.packets_received + other.packets_received,
+            packets_sent: self.packets_sent + other.packets_sent,
+            bytes_sent: self.bytes_sent + other.bytes_sent,
+            bytes_received: self.bytes_received + other.bytes_received,
+            dublicates_received: self.dublicates_received + other.dublicates_received,
+            packets_lost: self.packets_lost + other.packets_lost
+        }    
+    }
+}
+
+impl Averageable for AdvancedConnectionStats {
+    fn avg_divide(&self, by: usize) -> Self {
+        let by = by as f64;
+
+        Self {
+            queued_messages: (self.queued_messages as f64 / by) as usize,
+            packets_received: (self.packets_received as f64 / by) as usize,
+            packets_sent: (self.packets_sent as f64 / by) as usize,
+            bytes_sent: (self.bytes_sent as f64 / by) as usize,
+            bytes_received: (self.bytes_received as f64 / by) as usize,
+            dublicates_received: (self.dublicates_received as f64 / by) as usize,
+            packets_lost: (self.packets_lost as f64 / by) as usize,
+        }
+    }
+}
+
+/// Connection's average statistics that are naturally recorded over time.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectionStats {
+    /// Average packet loss (from 0 to 1)
+    pub packet_loss: f64,
+
+    /// Average round trip time (in seconds)
+    pub rtt: f64,
+
+    /// Median round trip time (in seconds). It represents the base RTT (connection's health) and is less prone to spikes
+    pub median_rtt: f64,
+
+    /// Average jitter or deviation (in seconds). It measures how far away all RTT samples are, or how "jittery" RTT samples are.
+    pub jitter: f64,
 }
 
 #[cfg(test)]

@@ -61,12 +61,12 @@ assert!(sock_b.is_connected(&addr_a));
 - [x] Better time management
 - [x] QUIC-like acknowledgment
 - [x] Congestion control + RTT
+- [x] Better stress testing
 - [ ] Fragmentation
 - [ ] Basic DoS prevention
 - [ ] Encryption + Handshake (probably using `snow`)
 - [ ] Socket customization (custom PPS, MTU limits, ...)
 - [ ] Better connection management (via UIDs, better reconnection)
-- [ ] Better stress testing
 - [ ] Benchmarking (performance + memory consumption)
 - [ ] C ABI 
 
