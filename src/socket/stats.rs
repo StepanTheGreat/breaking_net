@@ -123,9 +123,9 @@ impl RTTMeasurements {
     }
 }
 
-/// Various advanced immediate information about the connection. In most cases you should only collect [ConnectionStats], these ones are only 
+/// Various advanced immediate information about the connection. In most cases you should only collect [ConnectionStats], these ones are only
 /// useful for testing and real-time profiling.
-/// 
+///
 /// All the samples in this structure are reset and collected every single frame.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct AdvancedConnectionStats {
@@ -147,8 +147,8 @@ pub struct AdvancedConnectionStats {
     /// How many dublicates have we received from another connection
     pub dublicates_received: usize,
 
-    /// How many packets have we considered lost 
-    pub packets_lost: usize
+    /// How many packets have we considered lost
+    pub packets_lost: usize,
 }
 
 impl Add for AdvancedConnectionStats {
@@ -162,8 +162,8 @@ impl Add for AdvancedConnectionStats {
             bytes_sent: self.bytes_sent + other.bytes_sent,
             bytes_received: self.bytes_received + other.bytes_received,
             dublicates_received: self.dublicates_received + other.dublicates_received,
-            packets_lost: self.packets_lost + other.packets_lost
-        }    
+            packets_lost: self.packets_lost + other.packets_lost,
+        }
     }
 }
 

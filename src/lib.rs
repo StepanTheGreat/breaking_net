@@ -12,7 +12,7 @@ mod utils;
 
 pub use broadcast::BroadcastListener;
 pub use packet::Reliability;
-pub use socket::{ReceivedMessage, Socket, SocketEvent, SocketOptions, ConnectionStats};
+pub use socket::{AdvancedConnectionStats, ConnectionStats, ReceivedMessage, Socket, SocketEvent, SocketOptions};
 
 #[cfg(feature = "stress_testing")]
 pub use socket::VirtSettings;

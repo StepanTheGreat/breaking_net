@@ -1,6 +1,4 @@
-use std::{
-    collections::VecDeque, ops::Add,
-};
+use std::{collections::VecDeque, ops::Add};
 
 /// A utility polling macro (you can specify by how much to poll, how many times and which sockets)
 #[macro_export]
@@ -57,7 +55,9 @@ impl<T> Circular<T> {
 }
 
 impl<T> Circular<T>
-where T: Averageable {
+where
+    T: Averageable,
+{
     /// Compute an average of the buffer values. If no samples are present, this will return the default.
     pub fn average(&self) -> T {
         let len = self.len();
@@ -76,12 +76,12 @@ where T: Averageable {
     }
 }
 
-/// A type that can be averaged 
+/// A type that can be averaged
 pub trait Averageable: Default + Add<Self, Output = Self> + Copy {
     fn avg_divide(&self, by: usize) -> Self;
 }
 
-// We're using this macro to auto implement average computation for simple types 
+// We're using this macro to auto implement average computation for simple types
 macro_rules! impl_avg_for_basic_types {
     ($($ty:ty),*) => {
         $(
@@ -91,7 +91,7 @@ macro_rules! impl_avg_for_basic_types {
                 }
             }
         )*
-        
+
     };
 }
 

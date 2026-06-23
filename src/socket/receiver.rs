@@ -19,7 +19,6 @@ pub struct ReceiveManager {
     /// This is only useful for tracking which packets we received from the other socket.
     recv_packet_window: SlidingAckWindow,
 
-
     /// How many packets have we received during the last poll
     packets_received: usize,
 
@@ -27,7 +26,7 @@ pub struct ReceiveManager {
     bytes_received: usize,
 
     /// How many dublicates have we received during the last poll
-    dublicates_received: usize
+    dublicates_received: usize,
 }
 
 impl ReceiveManager {
@@ -43,14 +42,13 @@ impl ReceiveManager {
 
             packets_received: 0,
             bytes_received: 0,
-            dublicates_received: 0
+            dublicates_received: 0,
         }
     }
 
     /// Process the provided user message
     pub fn process_message(&mut self, message: UserMessage) {
         match message.message_id() {
-
             // A reliable message
             Some(packet_id) => {
                 if self.recv_message_window.within_bounds(packet_id)
@@ -77,7 +75,6 @@ impl ReceiveManager {
     }
 
     pub fn mark_received_packet_id(&mut self, packet: PacketSeqId, len: usize) {
-        
         // Make sure to update our statistics
         self.packets_received += 1;
         self.bytes_received += len;

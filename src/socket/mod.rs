@@ -18,9 +18,9 @@ mod sender;
 #[cfg(feature = "stress_testing")]
 mod virt;
 
-pub use stats::{ConnectionStats, AdvancedConnectionStats};
 pub use backend::SocketBackend;
 pub(crate) use backend::SocketUDP;
+pub use stats::{AdvancedConnectionStats, ConnectionStats};
 
 #[cfg(feature = "stress_testing")]
 use crate::socket::virt::VirtSocketUDP;
@@ -29,7 +29,9 @@ use crate::socket::virt::VirtSocketUDP;
 pub use crate::socket::virt::VirtSettings;
 
 use crate::{
-    DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE, packet::{PacketCrate, PacketCrateBuilder, Reliability}, socket_addr,
+    DEFAULT_PACKET_BUDGET, MTU_SIZE, MTU_SIZE_PRIVATE,
+    packet::{PacketCrate, PacketCrateBuilder, Reliability},
+    socket_addr,
 };
 
 use connection::SocketConnection;
@@ -409,8 +411,13 @@ impl Socket {
     }
 
     /// Retrieve all advanced statistics for this connection (averaged)
-    pub fn avg_advanced_statistics_for(&self, addr: &SocketAddr) -> Option<AdvancedConnectionStats> {
-        self.connections.get(addr).map(|c| c.avg_advanced_statistics())
+    pub fn avg_advanced_statistics_for(
+        &self,
+        addr: &SocketAddr,
+    ) -> Option<AdvancedConnectionStats> {
+        self.connections
+            .get(addr)
+            .map(|c| c.avg_advanced_statistics())
     }
 }
 

@@ -1,9 +1,15 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability, packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage}, socket::{
-        SocketBackend, receiver::ReceiveManager, sender::{SendContext, SendManager}, stats::{AdvancedConnectionStats, ConnectionStats},
-    }, utils::Circular,
+    Reliability,
+    packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
+    socket::{
+        SocketBackend,
+        receiver::ReceiveManager,
+        sender::{SendContext, SendManager},
+        stats::{AdvancedConnectionStats, ConnectionStats},
+    },
+    utils::Circular,
 };
 
 /// After how many seconds to time out without receiving any packets
@@ -21,7 +27,7 @@ pub struct SocketConnection {
 
     time: Duration,
 
-    advanced_stats: Circular<AdvancedConnectionStats>
+    advanced_stats: Circular<AdvancedConnectionStats>,
 }
 
 impl SocketConnection {
@@ -36,7 +42,7 @@ impl SocketConnection {
             receiver,
             time,
             last_hearbeat: time + HEARBEAT_TIMEOUT,
-            advanced_stats: Circular::new(10)
+            advanced_stats: Circular::new(10),
         }
     }
 
@@ -138,7 +144,7 @@ impl SocketConnection {
             rtt: self.sender.rtt(),
             median_rtt: self.sender.base_rtt(),
             packet_loss: self.sender.packet_loss(),
-            jitter: self.sender.rtt_deviation()
+            jitter: self.sender.rtt_deviation(),
         }
     }
 
@@ -151,7 +157,7 @@ impl SocketConnection {
             dublicates_received: self.receiver.dublicates_received(),
             packets_received: self.receiver.packets_received(),
             bytes_received: self.receiver.bytes_received(),
-            packets_lost: self.sender.packets_lost()
+            packets_lost: self.sender.packets_lost(),
         }
     }
 

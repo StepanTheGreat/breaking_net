@@ -2,10 +2,13 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    Reliability, packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map}, socket::{
+    Reliability,
+    packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
+    socket::{
         SocketBackend,
         stats::{Ema, RTTMeasurements},
-    }, window::SlidingAckWindow,
+    },
+    window::SlidingAckWindow,
 };
 
 /// At worst, resend every 30 seconds (limit exponential back-off)
@@ -69,7 +72,7 @@ struct PacketWindow {
     packet_loss: Ema,
 
     /// How many packets have we lost since the last poll
-    packets_lost: usize
+    packets_lost: usize,
 }
 
 impl PacketWindow {
@@ -82,7 +85,7 @@ impl PacketWindow {
             force_slide_time: time + safe_packet_rtt(rtt.rtt(), rtt.deviation()),
 
             packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
-            packets_lost: 0
+            packets_lost: 0,
         }
     }
 
@@ -553,7 +556,6 @@ impl SendManager {
                 self.message_queue.push_front(message);
             }
         }
-
     }
 
     /// Compute an approximatee packet budget based of the current network conditions and delta time
