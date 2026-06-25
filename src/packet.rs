@@ -15,8 +15,6 @@ pub type MessagePayload = Rc<Vec<u8>>;
 
 pub type PacketAckMap = u32;
 
-pub type MessageAckMap = u32;
-
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reliability {
@@ -121,10 +119,10 @@ pub struct PacketCrate {
     pub seq_id: PacketSeqId,
 
     /// The base of the packet window
-    pub packet_base: MessageId,
+    pub packet_base: PacketSeqId,
 
     /// The bitmap of the packet window
-    pub packet_map: MessageAckMap,
+    pub packet_map: PacketAckMap,
 
     /// A container of messages grouped under a single packet
     pub messages: Vec<UserMessage>,

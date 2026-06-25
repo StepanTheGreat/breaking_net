@@ -116,7 +116,7 @@ fn test_corruption_detection() {
     assert!(sock_b.recv_from().is_some());
 
     // Guarantee corruption
-    sock_a.virtual_settings().set_corruption_rate(1.0);
+    sock_a.virtual_settings().unwrap().set_corruption_rate(1.0);
 
     // Send our message
     sock_a.send_to(&sock_b.addr(), msg, rel);
@@ -137,7 +137,7 @@ fn test_reliable_messages() {
     let rel = Reliability::Reliable;
 
     // Guarantee message loss
-    sock_a.virtual_settings().set_packet_loss_rate(1.0);
+    sock_a.virtual_settings().unwrap().set_packet_loss_rate(1.0);
 
     // Connect them
     sock_a.connect(sock_b.addr());
@@ -151,7 +151,7 @@ fn test_reliable_messages() {
     assert!(!sock_b.has_messages());
 
     // Drop our message loss
-    sock_a.virtual_settings().set_packet_loss_rate(0.0);
+    sock_a.virtual_settings().unwrap().set_packet_loss_rate(0.0);
 
     // Poll 10 times
     poll_socks!(10, DT, [sock_a, sock_b]);
@@ -171,7 +171,7 @@ fn test_deduplication_messages() {
     let msg = b"Hello";
 
     // Guarantee message loss
-    sock_a.virtual_settings().set_dublicate_rate(1.0);
+    sock_a.virtual_settings().unwrap().set_dublicate_rate(1.0);
 
     // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
@@ -198,7 +198,7 @@ fn test_reordering_messages() {
     let msgs: &[&[u8]] = &[b"Hello", b" ", b"World", b"!"];
 
     // Let's throw some horrible numbers there
-    sock_a.virtual_settings().set_dublicate_rate(1.0);
+    sock_a.virtual_settings().unwrap().set_dublicate_rate(1.0);
 
     // First we're going to connect them together, since messages without a connection never get "filtered"
     sock_b.connect(sock_a.addr());
@@ -238,12 +238,14 @@ fn test_continuous_reliable_dialogue() {
     // Let's throw some horrible numbers there
     sock_b
         .virtual_settings()
+        .unwrap()
         .set_dublicate_rate(1.0)
         .set_latency(Duration::from_millis(15))
         .set_jitter(Duration::from_millis(5));
 
     sock_a
         .virtual_settings()
+        .unwrap()
         .set_dublicate_rate(1.0)
         .set_latency(Duration::from_millis(15))
         .set_jitter(Duration::from_millis(5));

@@ -2,7 +2,7 @@ use std::{net, time::Duration};
 
 use crate::{
     Reliability,
-    packet::{MessageAckMap, PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
+    packet::{PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
     socket::{
         SocketBackend,
         receiver::ReceiveManager,
@@ -50,7 +50,7 @@ impl SocketConnection {
         self.last_hearbeat = self.time + HEARBEAT_TIMEOUT;
     }
 
-    /// Acknowledgments for our messages have been received on this connection
+    /// Acknowledgments for our packets have been received on this connection
     pub fn sent_packet_acknowledgments_received(
         &mut self,
         packet_base: PacketSeqId,
@@ -64,10 +64,10 @@ impl SocketConnection {
         self.sender.set_sent_packet_received_base(packet_base);
 
         // Init the cursor
-        let mut cursor = 1 << (MessageAckMap::BITS - 1);
+        let mut cursor = 1 << (PacketAckMap::BITS - 1);
 
         // For each bit
-        for bind in 0..MessageAckMap::BITS {
+        for bind in 0..PacketAckMap::BITS {
             if (packet_map & cursor) > 0 {
                 let packet_id = packet_base + bind;
                 self.sender.mark_sent_packet_received(packet_id);

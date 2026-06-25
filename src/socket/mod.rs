@@ -374,15 +374,12 @@ impl Socket {
             .is_some()
     }
 
-    /// Retrieve a mutable reference to this socket's virtual settings when stress testing
+    /// Retrieve a mutable reference to this socket's virtual settings when stress testing (if the socket is virtual)
     #[cfg(feature = "stress_testing")]
-    pub fn virtual_settings(&mut self) -> &mut VirtSettings {
-        assert!(self.is_virtual(), "The socket isn't virtual");
-
-        (self.socket.as_mut() as &mut dyn Any)
-            .downcast_mut::<VirtSocketUDP>()
-            .unwrap()
-            .settings_mut()
+    pub fn virtual_settings(&mut self) -> Option<&mut VirtSettings> {
+        Some((self.socket.as_mut() as &mut dyn Any)
+            .downcast_mut::<VirtSocketUDP>()?
+            .settings_mut())
     }
 
     /// Clear the event queue. Super useful if you wish to ignore events

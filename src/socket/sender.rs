@@ -14,10 +14,10 @@ use crate::{
 /// At worst, resend every 30 seconds (limit exponential back-off)
 const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Initial RTT of 300ms
+/// Initial RTT
 const INIT_RTT: Duration = Duration::from_millis(200);
 
-/// Initial RTT deviation of 50ms
+/// Initial RTT deviation
 const INIT_DEVIATION: Duration = Duration::from_millis(50);
 
 /// We'll start at 0 and let the protocol figure out the packet loss by itself
@@ -87,6 +87,11 @@ impl PacketWindow {
             packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
             packets_lost: 0,
         }
+    }
+
+    /// A packet window is empty if its internal packet queue is empty
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 
     fn next_pid(&self) -> PacketSeqId {
@@ -253,6 +258,11 @@ impl SequenceCounter {
         self.0 = self.0.wrapping_add(1);
 
         next
+    }
+
+    /// Get the current value
+    fn current(&self) -> u32 {
+        self.0
     }
 }
 
@@ -588,14 +598,20 @@ impl SendManager {
 
     /// A new base was received (all packets before it were received), thus we must shift our window
     pub fn set_sent_packet_received_base(&mut self, new_base: MessageId) {
-        // While our base is lower than the current window position
-        while new_base > self.sent_packet_window.window_position() {
+        // While our base is lower than the current window position AND our packet window is not empty (goes to the maximum possible packet base)
+        while new_base > self.sent_packet_window.window_position() && !self.sent_packet_window.is_empty() {
             self.mark_sent_packet_received(self.sent_packet_window.window_position());
         }
     }
 
     /// A packet ID of ours was acknowledged by the receiver
     pub fn mark_sent_packet_received(&mut self, packet_id: PacketSeqId) {
+        
+        if packet_id >= self.packet_counter.current() {
+            // A packet that we never sent was acknowledged??
+            return;
+        }
+
         // If this packet is new - let us register and process it
         if let Some(packet) =
             self.sent_packet_window
