@@ -200,13 +200,13 @@ impl Socket {
     /// Receive and distribute (to connections) messages
     fn receive_messages(&mut self, dt: Duration) {
         // No matter what delta we get, it will still be capped to 1s. Polls must be frequent.
-        let dt = dt.as_secs_f64().min(1.0);
+        let dt = dt.min(Duration::from_secs(1));
 
         // Clear our recv budgets from the last call
         self.recv_budgets.clear();
 
         // How many packets per address we can receive during this poll. Essentially rate limiting.
-        let recv_budget = (self.options.packets_per_second as f64 * dt) as u32;
+        let recv_budget = (self.options.packets_per_second as f64 * dt.as_secs_f64()) as u32;
 
         // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
@@ -221,21 +221,32 @@ impl Socket {
             // In any other case decrement the budget
             *budget -= 1;
 
-            // If it's decodable
+            // If it's decodable AND valid
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
                 Ok(pcrate) => pcrate,
                 Err(_) => continue,
             };
+
+            if !pcrate.is_valid() {
+                continue;
+            }
 
             // Get a connection for this sender
             let mut connection = self.connections.get_mut(&sender);
 
             // If this is a message from a known connection
             if let Some(conn) = connection.as_mut() {
-                conn.mark_received_packet_id(pcrate.seq_id, data.len());
+                
+                // Some packets are ack-only, don't acknowledge those
+                if let Some(seq_id) = pcrate.seq_id {
+                    conn.mark_received_packet_id(seq_id, data.len());
+                }
+
+                // push our new packet score
+                conn.new_packet_score_received(pcrate.packet_score_id, pcrate.packet_score);
 
                 // let it mark all the acknowledgments it needs
-                conn.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map);
+                conn.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map, dt);
 
                 // and reset its hearbeat timer as well
                 conn.reset_heartbeat_timer();

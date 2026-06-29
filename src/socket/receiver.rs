@@ -1,7 +1,5 @@
 use crate::{
-    packet::{PacketSeqId, UserMessage},
-    socket::channels::{Channel, ChannelStorage},
-    window::SlidingAckWindow,
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, packet::{PacketSeqId, UserMessage}, socket::channels::{Channel, ChannelStorage}, window::{LeadingAckWindow, SlidingAckWindow},
 };
 
 pub struct ReceiveManager {
@@ -15,9 +13,9 @@ pub struct ReceiveManager {
     /// - What messages we DID receive
     recv_message_window: SlidingAckWindow,
 
-    /// This is somewhat similar to [ReceiveManager::recv_message_window], but it tracks packets instead.
+    /// This is somewhat similar to [ReceiveManager::recv_message_window], but it tracks packets instead (with a different window structure).
     /// This is only useful for tracking which packets we received from the other socket.
-    recv_packet_window: SlidingAckWindow,
+    recv_packet_window: LeadingAckWindow,
 
     /// How many packets have we received during the last poll
     packets_received: usize,
@@ -31,14 +29,11 @@ pub struct ReceiveManager {
 
 impl ReceiveManager {
     pub fn new() -> Self {
-        // An arbitrary number that in the future should depend on statistics instead
-        let window_len = 64;
-
         Self {
             channels: ChannelStorage::new(),
 
-            recv_message_window: SlidingAckWindow::new(window_len),
-            recv_packet_window: SlidingAckWindow::new(window_len),
+            recv_message_window: SlidingAckWindow::new(MESSAGE_WINDOW_LEN),
+            recv_packet_window: LeadingAckWindow::new(PACKET_WINDOW_LEN),
 
             packets_received: 0,
             bytes_received: 0,
@@ -87,7 +82,7 @@ impl ReceiveManager {
     }
 
     /// Get the window of packets that we were able to receive
-    pub fn received_packets_window(&self) -> &SlidingAckWindow {
+    pub fn received_packets_window(&self) -> &LeadingAckWindow {
         &self.recv_packet_window
     }
 

@@ -84,13 +84,13 @@ impl RTTMeasurements {
 
     /// Push a new delta into this RTT tracker
     pub fn push(&mut self, dt: Duration) {
-        let dt = dt.as_secs_f64();
+        let dts = dt.as_secs_f64();
 
-        self.rtt.push(dt);
+        self.rtt.push(dts.clone());
 
         // Our deviation is based on MAD https://en.wikipedia.org/wiki/Median_absolute_deviation
         // Which doesn't gives as much attention to outliers compared to standard deviation
-        self.rtt_dev.push((dt - self.rtt.get()).abs());
+        self.rtt_dev.push((dts - self.rtt.get()).abs());
     }
 
     /// Get average RTT

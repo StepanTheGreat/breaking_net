@@ -168,20 +168,21 @@ impl SocketBackend for VirtSocketUDP {
 
         for _ in 0..times {
             // Compute packet arrival time
-            let arrival_time = self.time + self.settings.latency;
+            let latency = self.settings.latency;
 
             // Compute the jitter. It can absolutely be negative, which is why we might actually subtract it from our time
             let jitter = self
                 .settings
                 .jitter
                 .mul_f32(self.rng.random_range(0.0..=1.0));
-            let arrival_time = if rand_chance(&mut self.rng, 0.5) {
-                arrival_time.saturating_add(jitter)
+
+            let latency = if rand_chance(&mut self.rng, 0.5) {
+                latency.saturating_add(jitter)
             } else {
-                arrival_time.saturating_sub(jitter)
+                latency.saturating_sub(jitter)
             };
 
-            self.packets.push((data.clone(), to, arrival_time));
+            self.packets.push((data.clone(), to, self.time+latency));
         }
 
         // This is done to avoid waiting for another cycle to actually send packets via sockets

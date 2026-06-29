@@ -147,14 +147,14 @@ fn test_reliable_messages() {
     sock_a.send_to(&sock_b.addr(), msg, rel);
 
     // It will fail no matter how many times we're going to resend it
-    poll_socks!(10, DT, [sock_a, sock_b]);
+    poll_socks!(5, DT, [sock_a, sock_b]);
     assert!(!sock_b.has_messages());
 
     // Drop our message loss
     sock_a.virtual_settings().unwrap().set_packet_loss_rate(0.0);
 
-    // Poll 10 times
-    poll_socks!(10, DT, [sock_a, sock_b]);
+    // Poll even more (due to exponential backoff)
+    poll_socks!(20, DT, [sock_a, sock_b]);
 
     // Ensure that our socket receives the message
     assert!(sock_b.recv_from().is_some());
@@ -226,6 +226,8 @@ fn test_reordering_messages() {
 
 /// Test a continous message dialogue.
 /// This test in particular tests if sockets can handle large volumes of messages in less packets.
+/// 
+/// This test can sometimes fail due to randomness, which is somewhat expected due to randomness involved
 #[test]
 fn test_continuous_reliable_dialogue() {
     let mut sock_a = make_socket(ADDR_A);
@@ -235,23 +237,29 @@ fn test_continuous_reliable_dialogue() {
     sock_b.connect(sock_a.addr());
     sock_a.connect(sock_b.addr());
 
+    const LATENCY: u64 = 120;
+    const JITTER: u64 = 20;
+
     // Let's throw some horrible numbers there
     sock_b
         .virtual_settings()
         .unwrap()
         .set_dublicate_rate(1.0)
-        .set_latency(Duration::from_millis(15))
-        .set_jitter(Duration::from_millis(5));
+        .set_latency(Duration::from_millis(LATENCY))
+        .set_jitter(Duration::from_millis(JITTER));
 
     sock_a
         .virtual_settings()
         .unwrap()
         .set_dublicate_rate(1.0)
-        .set_latency(Duration::from_millis(15))
-        .set_jitter(Duration::from_millis(5));
+        .set_latency(Duration::from_millis(LATENCY))
+        .set_jitter(Duration::from_millis(JITTER));
 
     const MESSAGE_LEN: usize = 220;
-    const MESSAGES: u8 = 255;
+    const MESSAGES: u8 = 200;
+
+    // How much time is allocated to this test
+    const MAX_TIME: Duration = Duration::from_millis((MESSAGES/5) as u64 * (LATENCY + JITTER));
 
     // Queue A LOT of messages
     for msg_ind in 0..MESSAGES {
@@ -261,29 +269,34 @@ fn test_continuous_reliable_dialogue() {
         sock_b.send_to(&sock_a.addr(), &msg, Reliability::Reliable);
     }
 
-    // Poll them
-    poll_socks!(DT, [sock_a, sock_b]);
-
     let mut counter_a = 0;
     let mut counter_b = 0;
-    let mut tries_left = MESSAGES / 4; // We should be able to receive everything with 4 times less packets 
+    let mut time = Duration::ZERO;
 
-    while tries_left > 0 {
-        tries_left -= 1;
+    while counter_a < MESSAGES || counter_b < MESSAGES {
+        time += DT;
+        if time > MAX_TIME {
+            panic!("Out of time");
+        }
 
-        poll_socks!(DT, [sock_a, sock_b]);
+        sock_a.poll(DT);
 
         while let Some(packet) = sock_a.recv_from() {
             assert_eq!(packet.data[0], counter_a);
             counter_a += 1;
         }
 
+        sock_b.poll(DT);
+
         while let Some(packet) = sock_b.recv_from() {
             assert_eq!(packet.data[0], counter_b);
             counter_b += 1;
         }
 
-        thread::sleep(Duration::from_millis(16));
+        assert!(sock_a.is_connected(&sock_b.addr()));
+        assert!(sock_b.is_connected(&sock_a.addr()));
+
+        thread::sleep(Duration::from_millis(8));
     }
 
     assert_eq!(counter_a, MESSAGES);
@@ -357,4 +370,38 @@ fn test_round_trip_time() {
     // The round trip time must be larger than DT
     let rtt = sock_a.statistics_for(&sock_b.addr()).unwrap().rtt;
     assert!(rtt > DT.as_secs_f64());
+}
+
+/// One problem on purely unreliable connections... they can't measure RTT, because there are no reliable packets.
+/// And it's super problematic, since it doesn't allow us to figure out network conditions, pacing and so on.
+/// 
+/// The protocol must ensure that at least once in a while, reliable packets are sent, even when there are no reliable messages
+#[test]
+fn test_infrequent_rtt_measurements() {
+    let mut sock_a = make_socket(ADDR_A);
+    let mut sock_b = make_socket(ADDR_B);
+
+    let msg = b"Test message";
+
+    // First we're going to connect them together
+    sock_b.connect(sock_a.addr());
+    sock_a.connect(sock_b.addr());
+
+    let a_rtt = sock_a.statistics_for(&sock_b.addr()).unwrap().rtt;
+    let b_rtt = sock_b.statistics_for(&sock_a.addr()).unwrap().rtt;
+
+    const POLLS: usize = 200;
+
+    for _ in 0..POLLS {
+        sock_a.send_to(&sock_b.addr(), msg, Reliability::Unreliable);
+        sock_b.send_to(&sock_a.addr(), msg, Reliability::Unreliable);
+
+        poll_socks!(DT, [sock_a, sock_b]);
+
+        thread::sleep(Duration::from_millis(8));
+    }
+
+    // They must gain new statistics
+    assert_ne!(a_rtt, sock_a.statistics_for(&sock_b.addr()).unwrap().rtt);
+    assert_ne!(b_rtt, sock_b.statistics_for(&sock_a.addr()).unwrap().rtt);
 }

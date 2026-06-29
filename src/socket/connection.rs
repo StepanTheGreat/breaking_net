@@ -1,19 +1,16 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability,
-    packet::{PacketAckMap, PacketCrateBuilder, PacketSeqId, UserMessage},
-    socket::{
+    Reliability, packet::{PacketAckMap, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage}, socket::{
         SocketBackend,
         receiver::ReceiveManager,
         sender::{SendContext, SendManager},
         stats::{AdvancedConnectionStats, ConnectionStats},
-    },
-    utils::Circular,
+    }, utils::Circular,
 };
 
 /// After how many seconds to time out without receiving any packets
-const HEARBEAT_TIMEOUT: Duration = Duration::from_millis(5_000);
+const HEARBEAT_TIMEOUT: Duration = Duration::from_millis(7_500);
 
 pub struct SocketConnection {
     /// The connection is directed to
@@ -50,31 +47,35 @@ impl SocketConnection {
         self.last_hearbeat = self.time + HEARBEAT_TIMEOUT;
     }
 
+    /// Push new packet score into this connection 
+    pub fn new_packet_score_received(&mut self, id: PacketScoreId, score: PacketScore) {
+        self.sender.push_new_packet_score(id, score);
+    }
+
     /// Acknowledgments for our packets have been received on this connection
     pub fn sent_packet_acknowledgments_received(
         &mut self,
         packet_base: PacketSeqId,
         packet_map: PacketAckMap,
+        dt: Duration
     ) {
         // No acknowledgments
         if packet_base == 0 && packet_map == 0 {
             return;
         }
 
-        self.sender.set_sent_packet_received_base(packet_base);
-
         // Init the cursor
-        let mut cursor = 1 << (PacketAckMap::BITS - 1);
+        let mut cursor = 1;
 
         // For each bit
         for bind in 0..PacketAckMap::BITS {
             if (packet_map & cursor) > 0 {
                 let packet_id = packet_base + bind;
-                self.sender.mark_sent_packet_received(packet_id);
+                self.sender.mark_sent_packet_received(packet_id, dt);
             }
 
-            // Move the cursor to the right
-            cursor >>= 1;
+            // Move the cursor to the leeft
+            cursor <<= 1;
         }
     }
 

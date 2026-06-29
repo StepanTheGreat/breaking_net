@@ -1,7 +1,7 @@
 use bitcode::{Decode, Encode};
 use std::rc::Rc;
 
-use crate::window::SlidingAckWindow;
+use crate::{PACKET_WINDOW_LEN, window::LeadingAckWindow};
 
 /// An ID of a packet
 pub type PacketSeqId = u32;
@@ -14,6 +14,10 @@ pub type MessageId = u32;
 pub type MessagePayload = Rc<Vec<u8>>;
 
 pub type PacketAckMap = u32;
+
+pub type PacketScoreId = u8;
+
+pub type PacketScore = u8;
 
 /// Different kinds of reliability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,17 +119,50 @@ impl UserMessage {
 /// The inherent serialisation type behind packet crate
 #[derive(Encode, Decode)]
 pub struct PacketCrate {
-    /// The sequence ID of this packet
-    pub seq_id: PacketSeqId,
+    /// The sequence ID of this packet. This field can be [None], if the packet is ack-only
+    pub seq_id: Option<PacketSeqId>,
 
     /// The base of the packet window
     pub packet_base: PacketSeqId,
 
     /// The bitmap of the packet window
     pub packet_map: PacketAckMap,
+    
+    /// How many packets are we allowing to send. This value tells the sender how many packets they're able to accept, before
+    /// getting overwhelmed, which is important to avoid packet loss. It must be as large as packet window size.
+    pub packet_score: PacketScore,
+
+    /// The unique identifier of a packet score. It's there to simply distinguish between different packet scores and avoid granting more scores
+    /// than neccessary. 
+    pub packet_score_id: PacketScoreId,
 
     /// A container of messages grouped under a single packet
     pub messages: Vec<UserMessage>,
+
+}
+
+impl PacketCrate {
+    /// Validate this packet crate. Useful for knowing if a packet was constructed well.
+    /// This simply validates packets against malicious ones.
+    pub fn is_valid(&self) -> bool {
+
+        let reliable_packet = self.seq_id.is_some();
+
+        // This verifies that if a packet is unreliable, it must NOT contain reliable messages. Only unreliable ones.
+        if !reliable_packet {
+            for msg in self.messages.iter() {
+                if msg.is_reliable() {
+                    return false;
+                } 
+            }
+        }
+
+        if (self.packet_score as usize) > PACKET_WINDOW_LEN {
+            return false;
+        }
+
+        true
+    }
 }
 
 /// A packet crate is essentially a single super packet which packs together multiple user messages and acknowledgments (to the same destination)
@@ -140,6 +177,9 @@ pub struct PacketCrateBuilder {
 
     /// The ID of a packet
     packet_seq_id: Option<PacketSeqId>,
+
+    /// Score attached to the packet
+    packet_score: Option<(PacketScoreId, PacketScore)>,
 
     serbuffer: bitcode::Buffer,
 
@@ -156,16 +196,21 @@ impl PacketCrateBuilder {
     /// - Base acknowledgment ID (4)
     /// - Acknowledgment map (4)
     /// - Length of user messages (4)
+    /// - Packet score ID (1)
+    /// - Packet score
     const INIT_SIZE: usize = size_of::<PacketSeqId>()
         + size_of::<PacketSeqId>()
         + size_of::<PacketAckMap>()
-        + size_of::<u32>();
+        + size_of::<u32>()
+        + size_of::<PacketScoreId>()
+        + size_of::<PacketScore>();
 
     pub fn new(mtu: usize) -> Self {
         Self {
             packet_acknowledgments: None,
             packet_seq_id: None,
             user_messages: Some(Vec::new()),
+            packet_score: None,
 
             serbuffer: bitcode::Buffer::new(),
 
@@ -188,6 +233,12 @@ impl PacketCrateBuilder {
         self.packet_seq_id = Some(seq_id);
     }
 
+    pub fn set_packet_score(&mut self, id: PacketScoreId, score: PacketScore) {
+        assert!((score as usize) <= PACKET_WINDOW_LEN);
+
+        self.packet_score = Some((id, score));
+    }
+
     pub fn put_packet_acknowledgments(&mut self, base: PacketSeqId, map: PacketAckMap) {
         self.packet_acknowledgments = Some((base, map));
     }
@@ -200,31 +251,20 @@ impl PacketCrateBuilder {
         self.size += size;
     }
 
-    /// Clear this packet crate for reusability
-    pub fn clear(&mut self) {
-        self.packet_acknowledgments = None;
-        self.packet_seq_id = None;
-        self.user_messages.as_mut().unwrap().clear();
-
-        self.size = Self::INIT_SIZE;
-    }
-
-    /// A packet crate packer is empty if it doesn't contain any acknowledgments or user messages
-    pub fn is_empty(&self) -> bool {
-        self.packet_acknowledgments.is_none() && self.user_messages.as_ref().unwrap().is_empty()
-    }
-
     /// Build this crate and get the slice of the serialized crate packet
     pub fn build(&mut self) -> &[u8] {
         // First of all, create our packet crate
 
-        let (packet_base, packet_map) = self.packet_acknowledgments.unwrap_or((0, 0));
-        let seq_id = self.packet_seq_id.expect("No packet ID was supplied");
+        let (packet_base, packet_map) = self.packet_acknowledgments.expect("Packet acknowledgments must be supplied");
+        let seq_id = self.packet_seq_id;
+        let (packet_score_id, packet_score) = self.packet_score.expect("Packet score must be supplied");
 
         let pcrate = PacketCrate {
             seq_id,
             packet_base,
             packet_map,
+            packet_score_id,
+            packet_score,
             messages: self.user_messages.take().unwrap(),
         };
 
@@ -243,6 +283,7 @@ impl PacketCrateBuilder {
         self.size = Self::INIT_SIZE;
         self.packet_acknowledgments = None;
         self.packet_seq_id = None;
+        self.packet_score = None;
 
         // Return the serialized slice
         serialized
@@ -253,15 +294,15 @@ impl PacketCrateBuilder {
 ///
 /// It will return the base sequence ID from which to acknowledge packets and the map itself.
 ///
-/// The base ID is included in the map
-pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
-    let base = window.window_position();
-
+/// The base ID is included in the map.
+pub fn build_ack_map(window: &LeadingAckWindow) -> (PacketSeqId, PacketAckMap) {
+    let base = window.window_base();
+    
     // Initialise the map
     let mut map = 0;
 
     // The read cursor
-    let mut cursor = (PacketAckMap::BITS - 1) << 1;
+    let mut cursor = 1;
 
     // For each bit
     for i in 0..PacketAckMap::BITS {
@@ -270,8 +311,8 @@ pub fn build_ack_map(window: &SlidingAckWindow) -> (PacketSeqId, PacketAckMap) {
             map |= cursor;
         }
 
-        // Shift the cursor to the right
-        cursor >>= 1;
+        // Shift the cursor to the left
+        cursor <<= 1;
     }
 
     (base, map)

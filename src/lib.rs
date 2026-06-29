@@ -20,6 +20,10 @@ pub use socket::VirtSettings;
 /// The default available packet budget
 pub(crate) const DEFAULT_PACKET_BUDGET: u32 = 60;
 
+pub(crate) const PACKET_WINDOW_LEN: usize = 32;
+
+pub(crate) const MESSAGE_WINDOW_LEN: usize = 64;
+
 /// The private crate-level MTU size is just a little bit bigger, to be able to fit protocol-level stuff.
 ///
 /// This way, the user can fully utilize the entire MTU limit, while the crate itself can fit its own metadata safely

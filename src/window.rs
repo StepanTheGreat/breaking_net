@@ -1,4 +1,4 @@
-use crate::packet::PacketSeqId;
+use crate::{PACKET_WINDOW_LEN, packet::PacketSeqId};
 
 /// A page used for storing bits in a bitset
 pub type BitPage = u64;
@@ -60,7 +60,7 @@ impl BitSet {
 
     /// The amount of pages this bitset contains (a single page containing multiple bits)
     pub fn len(&self) -> usize {
-        self.bit_len() / PAGE_BITS
+        self.pages.len()
     }
 
     /// The length of this bitset in bits
@@ -93,7 +93,7 @@ impl BitSet {
             }
 
             // The first pages will simply turn into zeros
-            for ind in 0..shift_pages {
+            for ind in 0..shift_pages.min(self.len()) {
                 self.pages[ind] = 0;
             }
         }
@@ -231,9 +231,127 @@ impl SlidingAckWindow {
     }
 }
 
+/// A leading acknowledgment window slides to the highest sequence ID. It doesn't care about sparsity, it's only
+/// purpose is to keep the highest sequence ID in the frame.
+/// 
+/// It also has a base, which is the highest non-acknowledged ID.
+pub struct LeadingAckWindow {
+    /// The position of the window (the youngest, non-acknowledged packet)
+    window_pos: PacketSeqId,
+
+    /// The frame storage itself (has a constant size)
+    frames: BitSet,
+}
+
+impl LeadingAckWindow {
+    /// Create a new leading window with the provided amount of packets.
+    pub fn new(packet_len: usize) -> Self {
+        let frames = BitSet::new(packet_len);
+
+        Self {
+            window_pos: packet_len as PacketSeqId,
+            frames,
+        }
+    }
+
+    /// Get the lower base of this window (included in the bitset)
+    pub fn window_base(&self) -> PacketSeqId {
+        self.window_pos-(self.frames.bit_len() as u32)
+    }
+
+    /// Mark this packet
+    pub fn mark(&mut self, packet: PacketSeqId) {
+        // Shift our window in case the packet is equal or larger than our position
+        if self.window_pos <= packet {
+
+            // Our position should always be higher by 1 than our highest packet
+            self.frames.shr((1+packet-self.window_pos) as usize);
+            self.window_pos = packet+1;
+        }
+        
+        let base = self.window_base();
+
+        if packet >= base {
+            let pind = (self.frames.bit_len()-1)-(packet-base) as usize;
+            self.frames.set(pind, true);
+        }
+
+        
+    }
+
+    /// Get the mark status for the provided packet
+    pub fn get_marked(&self, packet: PacketSeqId) -> PacketMark {
+        let base = self.window_base();
+
+        if packet >= self.window_pos {
+            PacketMark::OutOfReach
+        } else if packet < base {
+            PacketMark::Old
+        } else {
+            let pind = (self.frames.bit_len()-1)-(packet-base) as usize;
+            
+            if self.frames.get(pind) {
+                PacketMark::Marked
+            } else {
+                PacketMark::NonMarked
+            }
+        }
+    }
+
+    /// Get the lowest window position sequence
+    pub fn window_position(&self) -> PacketSeqId {
+        self.window_pos
+    }
+
+    /// Check if this packet is old (no longer within the window bounds)
+    pub fn is_old(&self, packet: PacketSeqId) -> bool {
+        self.get_marked(packet) == PacketMark::Old
+    }
+
+    pub fn is_out_of_reach(&self, packet: PacketSeqId) -> bool {
+        self.get_marked(packet) == PacketMark::OutOfReach
+    }
+
+    /// Check if this packet is within window's bounds
+    pub fn within_bounds(&self, packet: PacketSeqId) -> bool {
+        let m = self.get_marked(packet);
+
+        m == PacketMark::Marked || m == PacketMark::NonMarked
+    }
+
+    /// Count how much score is available for the sender from this window.
+    /// 
+    /// The score is equal to the amount of "free slots", that we can consume. One acknowledged packet = 1 free slot.
+    pub fn to_packet_score(&self) -> usize {
+        let base = self.window_base();
+
+        // Start off with full score
+        let mut score: usize = PACKET_WINDOW_LEN;
+
+        // For each non-acknowledged packet, decrease it
+        for i in 0..self.frames.bit_len() {
+
+            // If the index is above our base, it means that we didn't yet receive any packets.
+            if (i as u32) > base {
+                break
+            }
+
+            if !self.is_marked(base+i as u32) {
+                score -= 1;
+            }
+        }
+
+        score
+    }
+
+    pub fn is_marked(&self, packet: PacketSeqId) -> bool {
+        self.get_marked(packet) == PacketMark::Marked
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::window::{BitPage, BitSet, PAGE_BITS, SlidingAckWindow};
+    use crate::window::{BitPage, BitSet, LeadingAckWindow, PAGE_BITS, SlidingAckWindow};
 
     #[test]
     fn test_bitset_set() {
@@ -332,5 +450,39 @@ mod tests {
 
         // And higher packets can finally flow
         assert!(!window.is_out_of_reach(129));
+    }
+
+
+    #[test]
+    fn test_leading_window() {
+        let mut window = LeadingAckWindow::new(64);
+
+        // The window must initialize at 64 bits, with a position of 64, BUT, with 64 not being included in the bitset
+        assert_eq!(window.window_position(), 64);
+        assert!(window.is_out_of_reach(64));
+
+        // The window has no reason to shift yet
+        window.mark(63);
+        window.mark(0);
+        assert!(window.is_marked(63));
+        assert!(window.is_marked(0));
+        assert_eq!(window.window_position(), 64);
+
+        // However, if we move slightly upwards, the position will change
+        window.mark(64);
+        assert_eq!(window.window_position(), 65);
+        assert!(window.is_old(0));
+        assert!(window.is_marked(63));
+
+        // Still the last packet must be included
+        assert!(window.is_marked(64));
+
+        // We should be able to jump through great bit distances
+        window.mark(255);
+
+        assert_eq!(window.window_position(), 256);
+        assert!(window.is_marked(255));
+        assert!(window.is_old(63));
+        assert!(window.is_old(64));
     }
 }

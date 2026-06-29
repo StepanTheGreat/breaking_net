@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::Add};
+use std::{array, collections::VecDeque, ops::Add};
 
 /// A utility polling macro (you can specify by how much to poll, how many times and which sockets)
 #[macro_export]
@@ -97,47 +97,106 @@ macro_rules! impl_avg_for_basic_types {
 
 impl_avg_for_basic_types!(usize, f64, u32);
 
-// /// A `Cow`-like structure for arrays.
-// ///
-// /// When borrowed, borrows a slice, but when owned - allocates an array in a box
-// pub enum ArrCow<'a, T>
-// where
-//     T: Copy,
-// {
-//     Borrowed(&'a [T]),
-//     Boxed(Box<[T]>),
-// }
+/// A minimal vector that starts on the stack and then moves to the heap
+pub enum StackVec<T, const S: usize>
+where T: Default + Copy {
+    Stack {
+        items: [T; S],
+        length: usize
+    },
+    Heap(Vec<T>)
+}
 
-// impl<'a, T> Deref for ArrCow<'a, T>
-// where
-//     T: Copy,
-// {
-//     type Target = [T];
+impl<T, const S: usize> StackVec<T, S>
+where T: Default + Copy {
+    pub fn new() -> Self {
+        Self::Stack { 
+            items: array::from_fn(|_| T::default()), 
+            length: 0 
+        }
+    }
 
-//     fn deref(&self) -> &Self::Target {
-//         match self {
-//             Self::Borrowed(value) => value,
-//             Self::Boxed(value) => value,
-//         }
-//     }
-// }
+    pub fn is_stack(&self) -> bool {
+        matches!(self, StackVec::Stack { items: _, length: _ })
+    }
 
-// impl<'a, T> DerefMut for ArrCow<'a, T>
-// where
-//     T: Copy,
-// {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         // If borrowed - copy data to a box
-//         if let Self::Borrowed(value) = self {
-//             *self = Self::Boxed(Box::from_iter(value.iter().copied()));
-//         }
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Heap(v) => v.len(),
+            Self::Stack { length, .. } => *length
+        }
+    }
 
-//         match self {
-//             Self::Boxed(value) => value,
-//             Self::Borrowed(_) => unreachable!(),
-//         }
-//     }
-// }
+    fn should_reallocate(&self) -> bool {
+        self.is_stack() && self.len() == S
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Stack { items, length } => &items[..*length]
+        }
+    }
+
+    pub fn as_slice_mut(&mut self) -> &mut [T] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Stack { items, length } => &mut items[..*length]
+        }
+    }
+
+    /// Reallocates all items into a heap vector
+    fn reallocate(&mut self) {
+        assert!(self.should_reallocate());
+
+        let mut v = Vec::with_capacity(S+1);
+
+        for item in self.as_slice().iter().copied() {
+            v.push(item);
+        }
+
+        *self = StackVec::Heap(v);
+    }
+
+    pub fn push(&mut self, item: T) {
+        if self.should_reallocate() {
+            self.reallocate();
+        }
+
+        match self {
+            Self::Heap(v) => v.push(item),
+            Self::Stack { items, length } => {
+                items[*length] = item;
+                *length += 1;
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            return None;
+        }
+
+        match self {
+            Self::Heap(v) => v.pop(),
+            Self::Stack { items, length } => {
+                *length -= 1;
+                Some(items[*length])
+            }
+        }
+    }
+}
+
+impl<T, const S: usize> From<Vec<T>> for StackVec<T, S>
+where T: Default + Copy {
+    fn from(value: Vec<T>) -> Self {
+        Self::Heap(value)
+    }
+}
 
 /// Assert equals with an epsilon. Useful for float comparisons
 #[macro_export]

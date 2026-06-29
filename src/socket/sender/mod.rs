@@ -2,23 +2,25 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    Reliability,
-    packet::{MessageId, PacketCrateBuilder, PacketSeqId, UserMessage, build_ack_map},
-    socket::{
-        SocketBackend,
-        stats::{Ema, RTTMeasurements},
-    },
-    window::SlidingAckWindow,
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability, packet::{MessageId, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage, build_ack_map}, socket::{
+        SocketBackend, stats::RTTMeasurements,
+    }, utils::StackVec, window::{LeadingAckWindow, SlidingAckWindow},
 };
 
-/// At worst, resend every 30 seconds (limit exponential back-off)
-const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(30);
+mod pwindow;
+mod pscore;
+
+use pscore::PacketScoreKeeper;
+use pwindow::{PacketWindow, PacketWindowEntry};
+
+/// Timeout ceiling for messages
+const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Initial RTT
-const INIT_RTT: Duration = Duration::from_millis(200);
+const INIT_RTT: Duration = Duration::from_millis(100);
 
 /// Initial RTT deviation
-const INIT_DEVIATION: Duration = Duration::from_millis(50);
+const INIT_DEVIATION: Duration = Duration::from_millis(25);
 
 /// We'll start at 0 and let the protocol figure out the packet loss by itself
 const INIT_PACKET_LOSS: f64 = 0.0;
@@ -35,13 +37,6 @@ const PACKET_LOSS_ALPHA: f64 = 0.05;
 /// At worst network conditions, our reduction rate will be limited at 30% of our total capacity
 const MAX_PACKET_REDUCTION: f64 = 0.3;
 
-/// A single packet entry
-struct PacketEntry {
-    timestamp: Duration,
-
-    // TODO: Use stack vectors here
-    messages: Box<[MessageId]>,
-}
 
 /// Compute an average time a packet could take to arrive
 ///
@@ -49,199 +44,15 @@ struct PacketEntry {
 /// some amount of deviation applied on top for safety.
 ///
 /// This is mostly used in packet window's timeouts and resend timers
-fn safe_packet_rtt(rtt: f64, deviation: f64) -> Duration {
+pub fn safe_packet_rtt(rtt: f64, deviation: f64) -> Duration {
     Duration::from_secs_f64(rtt + 4.0 * deviation)
-}
-
-/// A sliding packet window which lets us sent packets by us. They include important information such as:
-/// - Timestamp of each packet
-/// - A list of messages associated to each packet (more efficient to track)
-struct PacketWindow {
-    /// A queue of packets
-    queue: VecDeque<Option<PacketEntry>>,
-
-    /// The current position of the window. The top packet in the queue has this ID
-    pos: PacketSeqId,
-
-    /// This timer gets resent on every new marked packet
-    force_slide_time: Duration,
-
-    time: Duration,
-
-    /// EMA packet loss, useful for general statistics
-    packet_loss: Ema,
-
-    /// How many packets have we lost since the last poll
-    packets_lost: usize,
-}
-
-impl PacketWindow {
-    /// Create a new window at position 0
-    fn new(time: Duration, rtt: &RTTMeasurements, capacity: usize) -> Self {
-        Self {
-            queue: VecDeque::with_capacity(capacity),
-            pos: 0,
-            time,
-            force_slide_time: time + safe_packet_rtt(rtt.rtt(), rtt.deviation()),
-
-            packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
-            packets_lost: 0,
-        }
-    }
-
-    /// A packet window is empty if its internal packet queue is empty
-    fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
-    fn next_pid(&self) -> PacketSeqId {
-        self.pos + self.queue.len() as PacketSeqId
-    }
-
-    /// Try map a packet ID to its index in the window
-    ///
-    /// None means that the id is unreachable (too old or recent)
-    fn pid_to_ind(&self, id: PacketSeqId) -> Option<usize> {
-        // If ID is too old OR its outside our window - return None
-        if id < self.pos || id >= self.next_pid() {
-            None
-        } else {
-            Some((id - self.pos) as usize)
-        }
-    }
-
-    /// Push a new packet onto the window.
-    ///
-    /// # Panics
-    /// If the id was unexpected. All packet entries must match their sequential IDs
-    pub fn push_sent(&mut self, id: PacketSeqId, entry: PacketEntry) {
-        assert_eq!(self.next_pid(), id, "Unexpected packet ID");
-
-        self.queue.push_back(Some(entry));
-    }
-
-    /// Mark next packet status to compute packet loss
-    fn mark_packet_status(&mut self, lost: bool) {
-        // We're taking the inverse, so lost = 0, not = 1
-        self.packet_loss.push((!lost) as u8 as f64);
-        self.packets_lost += 1;
-    }
-
-    fn slide(&mut self, sent_messages: &SlidingAckWindow, rtt: &RTTMeasurements) {
-        // While the queue is not empty
-        while !self.queue.is_empty() {
-            // We're going to check if we can slide the window
-            let (slide, by_force) = match &self.queue[0] {
-                // In case we get a packet, we can only slide the window if it has become irrelevant
-                Some(packet) => {
-                    // Count how many messages from this packet we sent
-                    let received = packet
-                        .messages
-                        .iter()
-                        .filter(|msg| sent_messages.is_marked(**msg))
-                        .count();
-
-                    // Only slide if all messages from this packet were received
-                    (received == packet.messages.len(), true)
-                }
-
-                // In any other case just slide forward
-                None => (true, false),
-            };
-
-            if slide {
-                if by_force {
-                    // Mark our packet as lost here, since it's irrelevant
-                    self.mark_packet_status(false);
-                }
-
-                // Pop it
-                let _ = self.queue.pop_front();
-
-                // Move our window
-                self.pos += 1;
-
-                // Reset our timer
-                self.force_slide_time = self.time + safe_packet_rtt(rtt.rtt(), rtt.deviation());
-            } else {
-                // In any other case we're blocked
-                break;
-            }
-        }
-    }
-
-    /// Try retrieve and mark the provided packet ID as received.
-    ///
-    /// This will remove it from the window and slide it.
-    ///
-    /// It will return [None] if the packet is out of reach or was already taken
-    pub fn mark_sent(
-        &mut self,
-        sent_messages: &SlidingAckWindow,
-        rtt: &RTTMeasurements,
-        id: PacketSeqId,
-    ) -> Option<PacketEntry> {
-        let ind = self.pid_to_ind(id)?;
-
-        let packet = self.queue[ind].take();
-
-        // Mark our packet as not lost
-        self.mark_packet_status(false);
-
-        self.slide(sent_messages, rtt);
-
-        packet
-    }
-
-    /// Update this packet window and forcibly push it when a packet isn't received in time
-    pub fn update(
-        &mut self,
-        time: Duration,
-        rtt: &RTTMeasurements,
-        sent_messages: &SlidingAckWindow,
-    ) {
-        self.time = time;
-
-        if self.queue.is_empty() {
-            return;
-        }
-
-        // If the time is up - we'll forcibly move
-        if self.force_slide_time <= self.time {
-            // Forcibly slide
-            let _ = self.queue[0].take();
-
-            // Mark this packet as lost
-            self.mark_packet_status(true);
-
-            self.slide(sent_messages, rtt);
-        }
-    }
-
-    pub fn reset_immediate_stats(&mut self) {
-        self.packets_lost = 0;
-    }
-
-    pub fn window_position(&self) -> PacketSeqId {
-        self.pos
-    }
-
-    /// Get current packet loss (from 0 to 1)
-    pub fn packet_loss(&self) -> f64 {
-        self.packet_loss.get()
-    }
-
-    /// How many packets were lost during the last poll
-    pub fn packets_lost(&self) -> usize {
-        self.packets_lost
-    }
 }
 
 /// The context neccessary to poll a [SendManager]
 pub struct SendContext<'a> {
     pub socket: &'a mut dyn SocketBackend,
     pub packet_builder: &'a mut PacketCrateBuilder,
-    pub recv_packet_window: &'a SlidingAckWindow,
+    pub recv_packet_window: &'a LeadingAckWindow,
 }
 
 /// A super simple sequence counter, that just increments and wrap arounds sequence ids
@@ -255,7 +66,7 @@ impl SequenceCounter {
     /// Cycle the next value
     fn next(&mut self) -> u32 {
         let next = self.0;
-        self.0 = self.0.wrapping_add(1);
+        self.0 = self.0.checked_add(1).expect("Sequence ID overflow (the connection was too long). This is a socket-level limitation.");
 
         next
     }
@@ -265,6 +76,22 @@ impl SequenceCounter {
         self.0
     }
 }
+
+struct PacketScoreIdCounter(PacketScoreId);
+
+impl PacketScoreIdCounter {
+    fn new() -> Self {
+        Self(0)
+    }
+
+    fn next(&mut self) -> PacketScoreId {
+        let next = self.0;
+        self.0 = self.0.wrapping_add(1);
+
+        next
+    } 
+}
+
 
 #[derive(Clone)]
 struct QueuedMessage {
@@ -305,6 +132,10 @@ impl QueuedMessage {
 
     fn message_id(&self) -> Option<MessageId> {
         self.message.message_id()
+    }
+
+    pub fn is_reliable(&self) -> bool {
+        self.message.is_reliable()
     }
 
     fn consume(self) -> UserMessage {
@@ -360,6 +191,12 @@ pub struct SendManager {
 
     rtt: RTTMeasurements,
 
+    /// Keep track of packet scores to know how to pace reliable packets
+    packet_score: PacketScoreKeeper,
+
+    /// A wrapping ID counter for packet scores
+    packet_score_id_counter: PacketScoreIdCounter,
+
     /// How many packets have we sent during the last poll
     packets_sent: usize,
 
@@ -380,8 +217,12 @@ impl SendManager {
             packet_counter: SequenceCounter::new(),
             message_counter: SequenceCounter::new(),
             message_queue: VecDeque::new(),
-            sent_message_window: SlidingAckWindow::new(64),
-            sent_packet_window: PacketWindow::new(time, &rtt, 64),
+            sent_message_window: SlidingAckWindow::new(MESSAGE_WINDOW_LEN),
+            sent_packet_window: PacketWindow::new(PACKET_WINDOW_LEN),
+
+            packet_score: PacketScoreKeeper::new(),
+            packet_score_id_counter: PacketScoreIdCounter::new(),
+
             packets_sent: 0,
             bytes_sent: 0,
             rtt,
@@ -445,12 +286,9 @@ impl SendManager {
         &mut self,
         socket: &mut dyn SocketBackend,
         crate_builder: &mut PacketCrateBuilder,
-        recv_packet_window: &SlidingAckWindow,
+        recv_packet_window: &LeadingAckWindow,
         dt: Duration,
     ) {
-        self.sent_packet_window
-            .update(self.time, &self.rtt, &self.sent_message_window);
-
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
         self.collect_candidates(&mut candidates);
 
@@ -465,32 +303,54 @@ impl SendManager {
         // Build our acknowledgment map for receiver's packets
         let (ack_base, ack_map) = build_ack_map(recv_packet_window);
 
+        let packet_score_id = self.packet_score_id_counter.next();
+        let packet_score = recv_packet_window.to_packet_score() as PacketScore;
+
+        // TODO: Move this to a separate module
+
         // While we have some available message slots
         while available_packets > 0 {
-            // If we have no messages to send, we can only send ONE acknowledgment packet if there are acknowledgments to send
+
+            // Reliable packets are those that can transport reliable messages. We have a limited set of those.
+            let is_reliable_packet = self.packet_score.has_score(
+                self.sent_packet_window.in_flight(), 
+                dt.as_secs_f64(), 
+                self.rtt()/2.0 // This is something that should be experimented with, but half of RTT works extremely well
+            );
+
+            // Check whether only reliable messages are left
+            let only_reliable_left = candidates.iter()
+                .find(|msg| !msg.message.is_reliable())
+                .is_none();
+
+            // If we have no messages to send, we can only send ONE acknowledgment packet
             if candidates.is_empty() {
-                // If there are no acknowledgments or no available ack-only packets - stop
-                if !available_ack_only_packet || ack_map == 0 {
+
+                // If there are no available ack-only packets - stop
+                if !available_ack_only_packet {
                     break;
                 }
+            } else if !is_reliable_packet && only_reliable_left {
+                // In case we only got reliable packets left and no available score - we must stop
+                break
             }
 
-            // Get a new packet ID
-            let packet_id = self.packet_counter.next();
-
-            let mut packed_messages: Vec<MessageId> = Vec::with_capacity(4);
+            let mut packed_rel_messages: StackVec<MessageId, 4> = StackVec::new();
 
             // While the candidate list is not empty
             while !candidates.is_empty() {
                 // Extract the message
                 let message = candidates.pop_front().unwrap();
 
+                // We must ensure that reliable messages only get sent on reliable packets
+                let appropriate_msg = if message.is_reliable() { is_reliable_packet } else { true }; 
+
                 // If our crate can fit the message - put it
-                if crate_builder.can_fit(message.size()) {
+                if appropriate_msg && crate_builder.can_fit(message.size()) {
                     // If this message is reliable - we're going to reset its timer
                     if let Some(message_id) = message.message_id() {
                         // Add it to the list of packed messages by this packet
-                        packed_messages.push(message_id);
+                        packed_rel_messages.push(message_id);
 
                         // Find it and reset its timer + increment retries
                         {
@@ -526,20 +386,29 @@ impl SendManager {
                 }
             }
 
-            // Set it on the next crate
-            crate_builder.set_packet_id(packet_id);
+            // We get a new packet ID only for reliable packets (with reliable messages)
+            let packet_id = if is_reliable_packet && !packed_rel_messages.is_empty() { 
+                Some(self.packet_counter.next())
+            } else { 
+                None 
+            };
 
             // Put our acknowledgments
             crate_builder.put_packet_acknowledgments(ack_base, ack_map);
 
-            // Register this packet in our window
-            self.sent_packet_window.push_sent(
-                packet_id,
-                PacketEntry {
-                    timestamp: self.time,
-                    messages: packed_messages.into_boxed_slice(),
-                },
-            );
+            // Set our packet scores
+            crate_builder.set_packet_score(packet_score_id, packet_score);
+
+            // If this packet is not an ack-only packet
+            if let Some(packet_id) = packet_id {
+                crate_builder.set_packet_id(packet_id);
+
+                // Register this packet to our window
+                self.sent_packet_window.push_sent(
+                    packet_id,
+                    PacketWindowEntry::new(self.time, packed_rel_messages),
+                );
+            }
 
             // Finally, our crate is ready to go. All we need to do is build and send it
             let data = crate_builder.build();
@@ -548,6 +417,11 @@ impl SendManager {
             // Update our immediate statistics
             self.packets_sent += 1;
             self.bytes_sent += data.len();
+
+            // Make sure to consume our score if this packet was reliable
+            if is_reliable_packet {
+                self.packet_score.consume_score();
+            }
 
             // Decrement the amount of packets we got (and disable ack-only packets)
             available_packets -= 1;
@@ -587,7 +461,7 @@ impl SendManager {
     }
 
     // Remove all messages from the message queue that were already received by the recipient
-    pub fn cleanup_received_messages(&mut self) {
+    fn cleanup_received_messages(&mut self) {
         let window = &self.sent_message_window;
 
         self.message_queue.retain(|msg| match msg.message_id() {
@@ -596,16 +470,10 @@ impl SendManager {
         });
     }
 
-    /// A new base was received (all packets before it were received), thus we must shift our window
-    pub fn set_sent_packet_received_base(&mut self, new_base: MessageId) {
-        // While our base is lower than the current window position AND our packet window is not empty (goes to the maximum possible packet base)
-        while new_base > self.sent_packet_window.window_position() && !self.sent_packet_window.is_empty() {
-            self.mark_sent_packet_received(self.sent_packet_window.window_position());
-        }
-    }
-
-    /// A packet ID of ours was acknowledged by the receiver
-    pub fn mark_sent_packet_received(&mut self, packet_id: PacketSeqId) {
+    /// A packet ID of ours was acknowledged by the receiver.
+    /// 
+    /// The delta time is important, since it allows us to take more "precise" RTT measurements.
+    pub fn mark_sent_packet_received(&mut self, packet_id: PacketSeqId, dt: Duration) {
         
         if packet_id >= self.packet_counter.current() {
             // A packet that we never sent was acknowledged??
@@ -613,19 +481,26 @@ impl SendManager {
         }
 
         // If this packet is new - let us register and process it
-        if let Some(packet) =
-            self.sent_packet_window
-                .mark_sent(&self.sent_message_window, &self.rtt, packet_id)
-        {
+        if let Some(packet) = self.sent_packet_window.mark_sent(packet_id) {
             // Compute our RTT delta and update measurements
-            let dt = self.time - packet.timestamp;
+            // The delta here is `time - (timestamp + dt/2)`.
+            // We're subtracting half of our delta time, because our packet could have been received during any interval between last poll and this one
+            // (which is equal to delta time). By subtracting by half, we're compensating for the artifical latency from our polling.
+            let dt = self.time.saturating_sub(packet.timestamp + dt.div_f32(2.0));
+
             self.rtt.push(dt);
 
             // Mark all messages within as received
-            for msg in &packet.messages {
+            for msg in packet.messages.as_slice() {
                 self.sent_message_window.mark(*msg);
             }
         }
+    }
+
+    /// Push new packet score onto this sender. This is neccessary to know how many packets we can send at a time to our receiver without
+    /// overwhelming them.
+    pub fn push_new_packet_score(&mut self, id: PacketScoreId, score: PacketScore) {
+        self.packet_score.push_score(id, score);
     }
 
     pub fn reset_immediate_stats(&mut self) {
