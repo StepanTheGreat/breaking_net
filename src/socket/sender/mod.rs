@@ -331,16 +331,14 @@ impl SendManager {
                 .find(|msg| !msg.message.is_reliable())
                 .is_none();
 
-            // If we have no messages to send, we can only send ONE acknowledgment packet
-            if candidates.is_empty() {
+            // If we have no messages to send, OR we only got reliable packets left and no available score,
+            // we can only send ONE acknowledgment packet.
+            if candidates.is_empty() || (!is_reliable_packet && only_reliable_left) {
 
                 // If there are no available ack-only packets - stop
                 if !available_ack_only_packet {
                     break;
                 }
-            } else if !is_reliable_packet && only_reliable_left {
-                // In case we only got reliable packets left and no available score - we must stop
-                break
             }
 
             let mut packed_rel_messages: StackVec<MessageId, 4> = StackVec::new();
