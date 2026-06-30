@@ -37,6 +37,9 @@ const PACKET_LOSS_ALPHA: f64 = 0.05;
 /// At worst network conditions, our reduction rate will be limited at 30% of our total capacity
 const MAX_PACKET_REDUCTION: f64 = 0.3;
 
+/// Keep it at minimum at 32ms
+const MIN_FORCED_RELIABLE_PACKET_TIMEOUT: Duration = Duration::from_millis(32);
+
 
 /// Compute an average time a packet could take to arrive
 ///
@@ -197,6 +200,9 @@ pub struct SendManager {
     /// A wrapping ID counter for packet scores
     packet_score_id_counter: PacketScoreIdCounter,
 
+    /// A timer neccessary for sending (once in a while) reliable packets, even when there are no reliable messages. Important for statistics.
+    last_reliable_packet: Duration,
+
     /// How many packets have we sent during the last poll
     packets_sent: usize,
 
@@ -219,6 +225,8 @@ impl SendManager {
             message_queue: VecDeque::new(),
             sent_message_window: SlidingAckWindow::new(MESSAGE_WINDOW_LEN),
             sent_packet_window: PacketWindow::new(PACKET_WINDOW_LEN),
+
+            last_reliable_packet: Duration::from_secs_f64(rtt.rtt()),
 
             packet_score: PacketScoreKeeper::new(),
             packet_score_id_counter: PacketScoreIdCounter::new(),
@@ -387,11 +395,16 @@ impl SendManager {
             }
 
             // We get a new packet ID only for reliable packets (with reliable messages)
-            let packet_id = if is_reliable_packet && !packed_rel_messages.is_empty() { 
+            let mut packet_id = if is_reliable_packet && !packed_rel_messages.is_empty() { 
                 Some(self.packet_counter.next())
             } else { 
                 None 
             };
+
+            // If there was no reliable packet for a while now - make one.
+            if packet_id.is_none() && self.time >= self.last_reliable_packet {
+                packet_id = Some(self.packet_counter.next());
+            }
 
             // Put our acknowledgments
             crate_builder.put_packet_acknowledgments(ack_base, ack_map);
@@ -419,8 +432,11 @@ impl SendManager {
             self.bytes_sent += data.len();
 
             // Make sure to consume our score if this packet was reliable
-            if is_reliable_packet {
+            if packet_id.is_some() {
                 self.packet_score.consume_score();
+
+                // Make sure to reset our timer
+                self.last_reliable_packet = self.time + Duration::from_secs_f64(self.rtt.rtt()).max(MIN_FORCED_RELIABLE_PACKET_TIMEOUT);
             }
 
             // Decrement the amount of packets we got (and disable ack-only packets)
