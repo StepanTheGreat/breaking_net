@@ -1,5 +1,8 @@
 use crate::{
-    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, packet::{PacketSeqId, UserMessage}, socket::channels::{Channel, ChannelStorage}, window::{LeadingAckWindow, SlidingAckWindow},
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN,
+    packet::{PacketSeqId, UserMessage},
+    socket::channels::{Channel, ChannelStorage},
+    window::{LeadingAckWindow, SlidingAckWindow},
 };
 
 pub struct ReceiveManager {

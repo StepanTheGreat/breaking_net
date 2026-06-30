@@ -127,25 +127,23 @@ pub struct PacketCrate {
 
     /// The bitmap of the packet window
     pub packet_map: PacketAckMap,
-    
+
     /// How many packets are we allowing to send. This value tells the sender how many packets they're able to accept, before
     /// getting overwhelmed, which is important to avoid packet loss. It must be as large as packet window size.
     pub packet_score: PacketScore,
 
     /// The unique identifier of a packet score. It's there to simply distinguish between different packet scores and avoid granting more scores
-    /// than neccessary. 
+    /// than neccessary.
     pub packet_score_id: PacketScoreId,
 
     /// A container of messages grouped under a single packet
     pub messages: Vec<UserMessage>,
-
 }
 
 impl PacketCrate {
     /// Validate this packet crate. Useful for knowing if a packet was constructed well.
     /// This simply validates packets against malicious ones.
     pub fn is_valid(&self) -> bool {
-
         let reliable_packet = self.seq_id.is_some();
 
         // This verifies that if a packet is unreliable, it must NOT contain reliable messages. Only unreliable ones.
@@ -153,7 +151,7 @@ impl PacketCrate {
             for msg in self.messages.iter() {
                 if msg.is_reliable() {
                     return false;
-                } 
+                }
             }
         }
 
@@ -234,7 +232,10 @@ impl PacketCrateBuilder {
     }
 
     pub fn set_packet_score(&mut self, id: PacketScoreId, score: PacketScore) {
-        assert!((score as usize) <= PACKET_WINDOW_LEN, "Invalid score, must be below or equals to packet window size");
+        assert!(
+            (score as usize) <= PACKET_WINDOW_LEN,
+            "Invalid score, must be below or equals to packet window size"
+        );
 
         self.packet_score = Some((id, score));
     }
@@ -255,9 +256,12 @@ impl PacketCrateBuilder {
     pub fn build(&mut self) -> &[u8] {
         // First of all, create our packet crate
 
-        let (packet_base, packet_map) = self.packet_acknowledgments.expect("Packet acknowledgments must be supplied");
+        let (packet_base, packet_map) = self
+            .packet_acknowledgments
+            .expect("Packet acknowledgments must be supplied");
         let seq_id = self.packet_seq_id;
-        let (packet_score_id, packet_score) = self.packet_score.expect("Packet score must be supplied");
+        let (packet_score_id, packet_score) =
+            self.packet_score.expect("Packet score must be supplied");
 
         let pcrate = PacketCrate {
             seq_id,
@@ -297,7 +301,7 @@ impl PacketCrateBuilder {
 /// The base ID is included in the map.
 pub fn build_ack_map(window: &LeadingAckWindow) -> (PacketSeqId, PacketAckMap) {
     let base = window.window_base();
-    
+
     // Initialise the map
     let mut map = 0;
 

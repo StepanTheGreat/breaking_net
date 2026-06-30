@@ -99,31 +99,38 @@ impl_avg_for_basic_types!(usize, f64, u32);
 
 /// A minimal vector that starts on the stack and then moves to the heap
 pub enum StackVec<T, const S: usize>
-where T: Default + Copy {
-    Stack {
-        items: [T; S],
-        length: usize
-    },
-    Heap(Vec<T>)
+where
+    T: Default + Copy,
+{
+    Stack { items: [T; S], length: usize },
+    Heap(Vec<T>),
 }
 
 impl<T, const S: usize> StackVec<T, S>
-where T: Default + Copy {
+where
+    T: Default + Copy,
+{
     pub fn new() -> Self {
-        Self::Stack { 
-            items: array::from_fn(|_| T::default()), 
-            length: 0 
+        Self::Stack {
+            items: array::from_fn(|_| T::default()),
+            length: 0,
         }
     }
 
     pub fn is_stack(&self) -> bool {
-        matches!(self, StackVec::Stack { items: _, length: _ })
+        matches!(
+            self,
+            StackVec::Stack {
+                items: _,
+                length: _
+            }
+        )
     }
 
     pub fn len(&self) -> usize {
         match self {
             Self::Heap(v) => v.len(),
-            Self::Stack { length, .. } => *length
+            Self::Stack { length, .. } => *length,
         }
     }
 
@@ -134,7 +141,7 @@ where T: Default + Copy {
     pub fn as_slice(&self) -> &[T] {
         match self {
             Self::Heap(v) => v,
-            Self::Stack { items, length } => &items[..*length]
+            Self::Stack { items, length } => &items[..*length],
         }
     }
 
@@ -149,7 +156,7 @@ where T: Default + Copy {
     fn reallocate(&mut self) {
         assert!(self.should_reallocate(), "Invalid state for reallocation");
 
-        let mut v = Vec::with_capacity(S+1);
+        let mut v = Vec::with_capacity(S + 1);
 
         for item in self.as_slice().iter().copied() {
             v.push(item);
@@ -192,7 +199,9 @@ where T: Default + Copy {
 }
 
 impl<T, const S: usize> From<Vec<T>> for StackVec<T, S>
-where T: Default + Copy {
+where
+    T: Default + Copy,
+{
     fn from(value: Vec<T>) -> Self {
         Self::Heap(value)
     }

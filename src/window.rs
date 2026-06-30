@@ -233,7 +233,7 @@ impl SlidingAckWindow {
 
 /// A leading acknowledgment window slides to the highest sequence ID. It doesn't care about sparsity, it's only
 /// purpose is to keep the highest sequence ID in the frame.
-/// 
+///
 /// It also has a base, which is the highest non-acknowledged ID.
 pub struct LeadingAckWindow {
     /// The position of the window (the youngest, non-acknowledged packet)
@@ -256,27 +256,24 @@ impl LeadingAckWindow {
 
     /// Get the lower base of this window (included in the bitset)
     pub fn window_base(&self) -> PacketSeqId {
-        self.window_pos-(self.frames.bit_len() as u32)
+        self.window_pos - (self.frames.bit_len() as u32)
     }
 
     /// Mark this packet
     pub fn mark(&mut self, packet: PacketSeqId) {
         // Shift our window in case the packet is equal or larger than our position
         if self.window_pos <= packet {
-
             // Our position should always be higher by 1 than our highest packet
-            self.frames.shr((1+packet-self.window_pos) as usize);
-            self.window_pos = packet+1;
+            self.frames.shr((1 + packet - self.window_pos) as usize);
+            self.window_pos = packet + 1;
         }
-        
+
         let base = self.window_base();
 
         if packet >= base {
-            let pind = (self.frames.bit_len()-1)-(packet-base) as usize;
+            let pind = (self.frames.bit_len() - 1) - (packet - base) as usize;
             self.frames.set(pind, true);
         }
-
-        
     }
 
     /// Get the mark status for the provided packet
@@ -288,8 +285,8 @@ impl LeadingAckWindow {
         } else if packet < base {
             PacketMark::Old
         } else {
-            let pind = (self.frames.bit_len()-1)-(packet-base) as usize;
-            
+            let pind = (self.frames.bit_len() - 1) - (packet - base) as usize;
+
             if self.frames.get(pind) {
                 PacketMark::Marked
             } else {
@@ -320,7 +317,7 @@ impl LeadingAckWindow {
     }
 
     /// Count how much score is available for the sender from this window.
-    /// 
+    ///
     /// The score is equal to the amount of "free slots", that we can consume. One acknowledged packet = 1 free slot.
     pub fn to_packet_score(&self) -> usize {
         let base = self.window_base();
@@ -330,13 +327,12 @@ impl LeadingAckWindow {
 
         // For each non-acknowledged packet, decrease it
         for i in 0..self.frames.bit_len() {
-
             // If the index is above our base, it means that we didn't yet receive any packets.
             if (i as u32) > base {
-                break
+                break;
             }
 
-            if !self.is_marked(base+i as u32) {
+            if !self.is_marked(base + i as u32) {
                 score -= 1;
             }
         }
@@ -451,7 +447,6 @@ mod tests {
         // And higher packets can finally flow
         assert!(!window.is_out_of_reach(129));
     }
-
 
     #[test]
     fn test_leading_window() {

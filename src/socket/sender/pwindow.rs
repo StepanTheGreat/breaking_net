@@ -1,6 +1,13 @@
 use std::{collections::VecDeque, time::Duration};
 
-use crate::{packet::{MessageId, PacketSeqId}, socket::{sender::{INIT_PACKET_LOSS, PACKET_LOSS_ALPHA}, stats::Ema}, utils::StackVec};
+use crate::{
+    packet::{MessageId, PacketSeqId},
+    socket::{
+        sender::{INIT_PACKET_LOSS, PACKET_LOSS_ALPHA},
+        stats::Ema,
+    },
+    utils::StackVec,
+};
 
 /// A single packet entry
 pub struct PacketWindowEntry {
@@ -13,7 +20,7 @@ impl PacketWindowEntry {
     pub fn new(timestamp: Duration, messages: StackVec<MessageId, 4>) -> Self {
         Self {
             timestamp,
-            messages
+            messages,
         }
     }
 }
@@ -37,7 +44,7 @@ pub struct PacketWindow {
     /// How many packets have we lost since the last poll
     packets_lost: usize,
 
-    capacity: usize
+    capacity: usize,
 }
 
 impl PacketWindow {
@@ -50,7 +57,7 @@ impl PacketWindow {
 
             packet_loss: Ema::new(INIT_PACKET_LOSS, PACKET_LOSS_ALPHA),
             packets_lost: 0,
-            capacity
+            capacity,
         }
     }
 
@@ -90,10 +97,10 @@ impl PacketWindow {
     pub fn push_sent(&mut self, id: PacketSeqId, entry: PacketWindowEntry) {
         assert_eq!(self.next_pid(), id, "Unexpected packet ID");
 
-        // Make sure to drop overflowing packets 
+        // Make sure to drop overflowing packets
         if self.queue.len() == self.capacity {
             let packet = self.queue.pop_front().unwrap();
-            
+
             // If a packet wasn't acknowledged - mark it as lost
             if packet.is_some() {
                 self.add_packet_loss_status(true);
@@ -102,7 +109,7 @@ impl PacketWindow {
 
         // Increment our next packet ID
         self.next_packet_id += 1;
-        
+
         // Move our window
         self.pos = self.pos.max(self.next_packet_id);
 
@@ -112,7 +119,6 @@ impl PacketWindow {
 
     /// Mark next packet status to compute packet loss
     fn add_packet_loss_status(&mut self, lost: bool) {
-
         if lost {
             self.packet_loss.push(1.0);
             self.packets_lost += 1;
@@ -135,7 +141,7 @@ impl PacketWindow {
         if packet.is_some() {
             // Mark our packet as not lost
             self.add_packet_loss_status(false);
-        } 
+        }
 
         packet
     }
@@ -154,7 +160,7 @@ impl PacketWindow {
         self.packets_lost
     }
 
-    /// Count how many packets are in flight, or essentially unacknowledged. 
+    /// Count how many packets are in flight, or essentially unacknowledged.
     pub fn in_flight(&self) -> usize {
         let mut total = 0;
 
@@ -170,8 +176,8 @@ impl PacketWindow {
 
 #[cfg(test)]
 mod tests {
-    use crate::socket::sender::*;
     use super::*;
+    use crate::socket::sender::*;
 
     const DT: Duration = Duration::from_millis(16);
 
@@ -212,7 +218,7 @@ mod tests {
             let p = window.mark_sent(1).unwrap();
             assert_eq!(p.timestamp, timestamp1);
             assert_eq!(p.messages.as_slice(), &[1, 2, 3]);
-            assert_eq!(time - p.timestamp, DT*3);
+            assert_eq!(time - p.timestamp, DT * 3);
         }
 
         // Update the time slightly again
@@ -223,7 +229,7 @@ mod tests {
             let p = window.mark_sent(2).unwrap();
             assert_eq!(p.timestamp, timestamp2);
             assert_eq!(p.messages.as_slice(), &[2, 3, 4]);
-            assert_eq!(time - p.timestamp, DT*3);
+            assert_eq!(time - p.timestamp, DT * 3);
         }
 
         // We'll add a final packet
@@ -237,6 +243,5 @@ mod tests {
 
         // We lost one packet
         assert_eq!(window.packets_lost(), 1);
-
     }
 }

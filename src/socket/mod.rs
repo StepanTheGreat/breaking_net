@@ -236,7 +236,6 @@ impl Socket {
 
             // If this is a message from a known connection
             if let Some(conn) = connection.as_mut() {
-                
                 // Some packets are ack-only, don't acknowledge those
                 if let Some(seq_id) = pcrate.seq_id {
                     conn.mark_received_packet_id(seq_id, data.len());
@@ -246,7 +245,11 @@ impl Socket {
                 conn.new_packet_score_received(pcrate.packet_score_id, pcrate.packet_score);
 
                 // let it mark all the acknowledgments it needs
-                conn.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map, dt);
+                conn.sent_packet_acknowledgments_received(
+                    pcrate.packet_base,
+                    pcrate.packet_map,
+                    dt,
+                );
 
                 // and reset its hearbeat timer as well
                 conn.reset_heartbeat_timer();
@@ -388,9 +391,11 @@ impl Socket {
     /// Retrieve a mutable reference to this socket's virtual settings when stress testing (if the socket is virtual)
     #[cfg(feature = "stress_testing")]
     pub fn virtual_settings(&mut self) -> Option<&mut VirtSettings> {
-        Some((self.socket.as_mut() as &mut dyn Any)
-            .downcast_mut::<VirtSocketUDP>()?
-            .settings_mut())
+        Some(
+            (self.socket.as_mut() as &mut dyn Any)
+                .downcast_mut::<VirtSocketUDP>()?
+                .settings_mut(),
+        )
     }
 
     /// Clear the event queue. Super useful if you wish to ignore events

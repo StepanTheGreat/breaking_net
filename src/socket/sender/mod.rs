@@ -2,13 +2,18 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability, packet::{MessageId, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage, build_ack_map}, socket::{
-        SocketBackend, stats::RTTMeasurements,
-    }, utils::StackVec, window::{LeadingAckWindow, SlidingAckWindow},
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability,
+    packet::{
+        MessageId, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage,
+        build_ack_map,
+    },
+    socket::{SocketBackend, stats::RTTMeasurements},
+    utils::StackVec,
+    window::{LeadingAckWindow, SlidingAckWindow},
 };
 
-mod pwindow;
 mod pscore;
+mod pwindow;
 
 use pscore::PacketScoreKeeper;
 use pwindow::{PacketWindow, PacketWindowEntry};
@@ -39,7 +44,6 @@ const MAX_PACKET_REDUCTION: f64 = 0.3;
 
 /// Keep it at minimum at 32ms
 const MIN_FORCED_RELIABLE_PACKET_TIMEOUT: Duration = Duration::from_millis(32);
-
 
 /// Compute an average time a packet could take to arrive
 ///
@@ -92,9 +96,8 @@ impl PacketScoreIdCounter {
         self.0 = self.0.wrapping_add(1);
 
         next
-    } 
+    }
 }
-
 
 #[derive(Clone)]
 struct QueuedMessage {
@@ -318,22 +321,19 @@ impl SendManager {
 
         // While we have some available message slots
         while available_packets > 0 {
-
             // Reliable packets are those that can transport reliable messages. We have a limited set of those.
             let is_reliable_packet = self.packet_score.has_score(
-                self.sent_packet_window.in_flight(), 
-                dt.as_secs_f64(), 
-                self.rtt()
+                self.sent_packet_window.in_flight(),
+                dt.as_secs_f64(),
+                self.rtt(),
             );
 
             // Check whether only reliable messages are left
-            let only_reliable_left = candidates.iter()
-                .any(|msg| !msg.message.is_reliable());
+            let only_reliable_left = candidates.iter().any(|msg| !msg.message.is_reliable());
 
             // If we have no messages to send, OR we only got reliable packets left and no available score,
             // we can only send ONE acknowledgment packet.
             if candidates.is_empty() || (!is_reliable_packet && only_reliable_left) {
-
                 // If there are no available ack-only packets - stop
                 if !available_ack_only_packet {
                     break;
@@ -348,7 +348,11 @@ impl SendManager {
                 let message = candidates.pop_front().unwrap();
 
                 // We must ensure that reliable messages only get sent on reliable packets
-                let appropriate_msg = if message.is_reliable() { is_reliable_packet } else { true }; 
+                let appropriate_msg = if message.is_reliable() {
+                    is_reliable_packet
+                } else {
+                    true
+                };
 
                 // If our crate can fit the message - put it
                 if appropriate_msg && crate_builder.can_fit(message.size()) {
@@ -392,10 +396,10 @@ impl SendManager {
             }
 
             // We get a new packet ID only for reliable packets (with reliable messages)
-            let mut packet_id = if is_reliable_packet && !packed_rel_messages.is_empty() { 
+            let mut packet_id = if is_reliable_packet && !packed_rel_messages.is_empty() {
                 Some(self.packet_counter.next())
-            } else { 
-                None 
+            } else {
+                None
             };
 
             // If there was no reliable packet for a while now - make one.
@@ -433,7 +437,9 @@ impl SendManager {
                 self.packet_score.consume_score();
 
                 // Make sure to reset our timer
-                self.last_reliable_packet = self.time + Duration::from_secs_f64(self.rtt.rtt()).max(MIN_FORCED_RELIABLE_PACKET_TIMEOUT);
+                self.last_reliable_packet = self.time
+                    + Duration::from_secs_f64(self.rtt.rtt())
+                        .max(MIN_FORCED_RELIABLE_PACKET_TIMEOUT);
             }
 
             // Decrement the amount of packets we got (and disable ack-only packets)
@@ -484,10 +490,9 @@ impl SendManager {
     }
 
     /// A packet ID of ours was acknowledged by the receiver.
-    /// 
+    ///
     /// The delta time is important, since it allows us to take more "precise" RTT measurements.
     pub fn mark_sent_packet_received(&mut self, packet_id: PacketSeqId, dt: Duration) {
-        
         if packet_id >= self.packet_counter.current() {
             // A packet that we never sent was acknowledged??
             return;

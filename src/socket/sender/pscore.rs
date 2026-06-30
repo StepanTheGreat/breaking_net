@@ -1,8 +1,11 @@
-use crate::{PACKET_WINDOW_LEN, packet::{PacketScore, PacketScoreId}};
+use crate::{
+    PACKET_WINDOW_LEN,
+    packet::{PacketScore, PacketScoreId},
+};
 
 pub struct PacketScoreKeeper {
     /// The "unique" wrapping score ID
-    id: PacketScoreId, 
+    id: PacketScoreId,
 
     /// The score itself that we can spend on reliable packets
     score: PacketScore,
@@ -10,24 +13,26 @@ pub struct PacketScoreKeeper {
 
 impl PacketScoreKeeper {
     pub fn new() -> Self {
-
         // The first packet has all the scores, since we're only exploring the connection
         Self {
             id: 0,
-            score: PACKET_WINDOW_LEN as PacketScore
+            score: PACKET_WINDOW_LEN as PacketScore,
         }
     }
 
-    /// Push new score under provided ID. 
-    /// 
+    /// Push new score under provided ID.
+    ///
     /// Doesn't do anything if the ID isn't greater than the current one
     pub fn push_score(&mut self, new_id: PacketScoreId, new_score: PacketScore) {
-        assert!((new_score as usize) <= PACKET_WINDOW_LEN, "Invalid score, must be below packet window size");
+        assert!(
+            (new_score as usize) <= PACKET_WINDOW_LEN,
+            "Invalid score, must be below packet window size"
+        );
 
         // Only overwrite if this ID is more recent.
         // We're using here wrapping trick, so a new wrapped ID of 0, compared to say 254, can be considered new, if the difference is less than 127.
         // That's because our ID are supposed to wrap extremely fast.
-        if new_id != self.id && new_id.wrapping_sub(self.id) <= PacketScoreId::MAX/2 {
+        if new_id != self.id && new_id.wrapping_sub(self.id) <= PacketScoreId::MAX / 2 {
             self.id = new_id;
             self.score = new_score;
         }
@@ -36,15 +41,14 @@ impl PacketScoreKeeper {
     /// Effective score takes into account round trip time and our delta time, which in turn limits the amount of packets we can actually send.
     /// Why? Because with high RTT, polling frequencies usually stay the same. That means that even with high RTT as 200ms and 60PPS, we can send
     /// up to 12 packets within 200ms interval, which is extremely high.
-    /// 
+    ///
     /// This effectively reduces packet loss and enforces pacing.
     fn effective_score(&self, dt: f64, rtt: f64) -> u8 {
-        (self.score as f64 * dt.abs()/rtt.abs()).clamp(0.0, PACKET_WINDOW_LEN as f64) as u8
+        (self.score as f64 * dt.abs() / rtt.abs()).clamp(0.0, PACKET_WINDOW_LEN as f64) as u8
     }
 
     /// Check if we can send any packets as of now or we should wait
     pub fn has_score(&self, packets_in_flight: usize, dt: f64, rtt: f64) -> bool {
-
         // We're dividing RTT by 2 here, because it measures effective score against one-way latency, instead of both, which as a result
         // is much more efficient and in most cases still safe for packet loss.
         let effective_score = self.effective_score(dt, rtt / 2.0);
@@ -54,7 +58,7 @@ impl PacketScoreKeeper {
     }
 
     /// Consume our score. Doesn't do anything if there's none.
-    pub fn consume_score(&mut self) {        
+    pub fn consume_score(&mut self) {
         if self.score > 0 {
             self.score -= 1;
         }

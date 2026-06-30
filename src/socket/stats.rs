@@ -205,7 +205,7 @@ pub struct ConnectionStats {
 impl Debug for ConnectionStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
-            f, 
+            f,
             "{{ rtt: {:.2}ms, m. rtt: {:.2}ms, packet loss: {:.2}%, jitter: {:.2}ms }}",
             self.rtt * 1000.0,
             self.median_rtt * 1000.0,

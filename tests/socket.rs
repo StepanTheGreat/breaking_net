@@ -226,7 +226,7 @@ fn test_reordering_messages() {
 
 /// Test a continous message dialogue.
 /// This test in particular tests if sockets can handle large volumes of messages in less packets.
-/// 
+///
 /// This test can sometimes fail due to randomness, which is somewhat expected due to randomness involved
 #[test]
 fn test_continuous_reliable_dialogue() {
@@ -259,7 +259,7 @@ fn test_continuous_reliable_dialogue() {
     const MESSAGES: u8 = 200;
 
     // How much time is allocated to this test
-    const MAX_TIME: Duration = Duration::from_millis((MESSAGES/5) as u64 * (LATENCY + JITTER));
+    const MAX_TIME: Duration = Duration::from_millis((MESSAGES / 5) as u64 * (LATENCY + JITTER));
 
     // Queue A LOT of messages
     for msg_ind in 0..MESSAGES {
@@ -374,7 +374,7 @@ fn test_round_trip_time() {
 
 /// One problem on purely unreliable connections... they can't measure RTT, because there are no reliable packets.
 /// And it's super problematic, since it doesn't allow us to figure out network conditions, pacing and so on.
-/// 
+///
 /// The protocol must ensure that at least once in a while, reliable packets are sent, even when there are no reliable messages
 #[test]
 fn test_infrequent_rtt_measurements() {

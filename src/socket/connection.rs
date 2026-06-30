@@ -1,12 +1,17 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability, packet::{PacketAckMap, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage}, socket::{
+    Reliability,
+    packet::{
+        PacketAckMap, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage,
+    },
+    socket::{
         SocketBackend,
         receiver::ReceiveManager,
         sender::{SendContext, SendManager},
         stats::{AdvancedConnectionStats, ConnectionStats},
-    }, utils::Circular,
+    },
+    utils::Circular,
 };
 
 /// After how many seconds to time out without receiving any packets
@@ -47,7 +52,7 @@ impl SocketConnection {
         self.last_hearbeat = self.time + HEARBEAT_TIMEOUT;
     }
 
-    /// Push new packet score into this connection 
+    /// Push new packet score into this connection
     pub fn new_packet_score_received(&mut self, id: PacketScoreId, score: PacketScore) {
         self.sender.push_new_packet_score(id, score);
     }
@@ -57,7 +62,7 @@ impl SocketConnection {
         &mut self,
         packet_base: PacketSeqId,
         packet_map: PacketAckMap,
-        dt: Duration
+        dt: Duration,
     ) {
         // No acknowledgments
         if packet_base == 0 && packet_map == 0 {

@@ -182,7 +182,7 @@ impl SocketBackend for VirtSocketUDP {
                 latency.saturating_sub(jitter)
             };
 
-            self.packets.push((data.clone(), to, self.time+latency));
+            self.packets.push((data.clone(), to, self.time + latency));
         }
 
         // This is done to avoid waiting for another cycle to actually send packets via sockets
