@@ -84,6 +84,9 @@ impl RTTMeasurements {
 
     /// Push a new delta into this RTT tracker
     pub fn push(&mut self, dt: Duration) {
+        // We'll keep a reasonable minimum, on loopback especially
+        let dt = dt.max(Duration::from_millis(1));
+
         let dts = dt.as_secs_f64();
 
         self.rtt.push(dts.clone());

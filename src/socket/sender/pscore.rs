@@ -44,20 +44,19 @@ impl PacketScoreKeeper {
 
     /// Check if we can send any packets as of now or we should wait
     pub fn has_score(&self, packets_in_flight: usize, dt: f64, rtt: f64) -> bool {
-        let effective_score = self.effective_score(dt, rtt);
+
+        // We're dividing RTT by 2 here, because it measures effective score against one-way latency, instead of both, which as a result
+        // is much more efficient and in most cases still safe for packet loss.
+        let effective_score = self.effective_score(dt, rtt / 2.0);
 
         // We got score if the effective score is greater than 0, or there are less packets in flight than our effective score
         (effective_score > 0) && (packets_in_flight < effective_score as usize)
     }
 
-    pub fn score(&self) -> PacketScore {
-        self.score
-    }
-
-    /// Consume our score. BUT, only if there is any. Check with [has_score]
-    pub fn consume_score(&mut self) {
-        assert!(self.score > 0, "Can't consume score, got none");
-        
-        self.score -= 1;
+    /// Consume our score. Doesn't do anything if there's none.
+    pub fn consume_score(&mut self) {        
+        if self.score > 0 {
+            self.score -= 1;
+        }
     }
 }

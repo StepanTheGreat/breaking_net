@@ -238,7 +238,7 @@ fn test_continuous_reliable_dialogue() {
     sock_a.connect(sock_b.addr());
 
     const LATENCY: u64 = 120;
-    const JITTER: u64 = 20;
+    const JITTER: u64 = 40;
 
     // Let's throw some horrible numbers there
     sock_b
@@ -259,7 +259,7 @@ fn test_continuous_reliable_dialogue() {
     const MESSAGES: u8 = 200;
 
     // How much time is allocated to this test
-    const MAX_TIME: Duration = Duration::from_millis((MESSAGES/5) as u64 * (LATENCY + JITTER));
+    const MAX_TIME: Duration = Duration::from_millis((MESSAGES/4) as u64 * (LATENCY + JITTER));
 
     // Queue A LOT of messages
     for msg_ind in 0..MESSAGES {

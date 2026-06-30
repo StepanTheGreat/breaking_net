@@ -315,7 +315,7 @@ impl SendManager {
             let is_reliable_packet = self.packet_score.has_score(
                 self.sent_packet_window.in_flight(), 
                 dt.as_secs_f64(), 
-                self.rtt()/2.0 // This is something that should be experimented with, but half of RTT works extremely well
+                self.rtt()
             );
 
             // Check whether only reliable messages are left
