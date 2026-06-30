@@ -328,8 +328,7 @@ impl SendManager {
 
             // Check whether only reliable messages are left
             let only_reliable_left = candidates.iter()
-                .find(|msg| !msg.message.is_reliable())
-                .is_none();
+                .any(|msg| !msg.message.is_reliable());
 
             // If we have no messages to send, OR we only got reliable packets left and no available score,
             // we can only send ONE acknowledgment packet.

@@ -234,7 +234,7 @@ impl PacketCrateBuilder {
     }
 
     pub fn set_packet_score(&mut self, id: PacketScoreId, score: PacketScore) {
-        assert!((score as usize) <= PACKET_WINDOW_LEN);
+        assert!((score as usize) <= PACKET_WINDOW_LEN, "Invalid score, must be below or equals to packet window size");
 
         self.packet_score = Some((id, score));
     }

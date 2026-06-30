@@ -22,7 +22,7 @@ impl PacketScoreKeeper {
     /// 
     /// Doesn't do anything if the ID isn't greater than the current one
     pub fn push_score(&mut self, new_id: PacketScoreId, new_score: PacketScore) {
-        assert!((new_score as usize) <= PACKET_WINDOW_LEN);
+        assert!((new_score as usize) <= PACKET_WINDOW_LEN, "Invalid score, must be below packet window size");
 
         // Only overwrite if this ID is more recent.
         // We're using here wrapping trick, so a new wrapped ID of 0, compared to say 254, can be considered new, if the difference is less than 127.
@@ -39,7 +39,7 @@ impl PacketScoreKeeper {
     /// 
     /// This effectively reduces packet loss and enforces pacing.
     fn effective_score(&self, dt: f64, rtt: f64) -> u8 {
-        ((self.score as f64 * dt.abs()/rtt.abs())).clamp(0.0, PACKET_WINDOW_LEN as f64) as u8
+        (self.score as f64 * dt.abs()/rtt.abs()).clamp(0.0, PACKET_WINDOW_LEN as f64) as u8
     }
 
     /// Check if we can send any packets as of now or we should wait

@@ -49,9 +49,9 @@ impl<T> Circular<T> {
         self.buffer.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     self.buffer.is_empty()
+    // }
 }
 
 impl<T> Circular<T>
@@ -138,16 +138,16 @@ where T: Default + Copy {
         }
     }
 
-    pub fn as_slice_mut(&mut self) -> &mut [T] {
-        match self {
-            Self::Heap(v) => v,
-            Self::Stack { items, length } => &mut items[..*length]
-        }
-    }
+    // pub fn as_slice_mut(&mut self) -> &mut [T] {
+    //     match self {
+    //         Self::Heap(v) => v,
+    //         Self::Stack { items, length } => &mut items[..*length]
+    //     }
+    // }
 
     /// Reallocates all items into a heap vector
     fn reallocate(&mut self) {
-        assert!(self.should_reallocate());
+        assert!(self.should_reallocate(), "Invalid state for reallocation");
 
         let mut v = Vec::with_capacity(S+1);
 
@@ -176,19 +176,19 @@ where T: Default + Copy {
         self.len() == 0
     }
 
-    pub fn pop(&mut self) -> Option<T> {
-        if self.is_empty() {
-            return None;
-        }
+    // pub fn pop(&mut self) -> Option<T> {
+    //     if self.is_empty() {
+    //         return None;
+    //     }
 
-        match self {
-            Self::Heap(v) => v.pop(),
-            Self::Stack { items, length } => {
-                *length -= 1;
-                Some(items[*length])
-            }
-        }
-    }
+    //     match self {
+    //         Self::Heap(v) => v.pop(),
+    //         Self::Stack { items, length } => {
+    //             *length -= 1;
+    //             Some(items[*length])
+    //         }
+    //     }
+    // }
 }
 
 impl<T, const S: usize> From<Vec<T>> for StackVec<T, S>
