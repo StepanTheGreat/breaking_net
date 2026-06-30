@@ -1,4 +1,4 @@
-use std::{ops::Add, time::Duration};
+use std::{fmt::Debug, ops::Add, time::Duration};
 
 use crate::utils::{Averageable, Circular};
 
@@ -187,7 +187,7 @@ impl Averageable for AdvancedConnectionStats {
 }
 
 /// Connection's average statistics that are naturally recorded over time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct ConnectionStats {
     /// Average packet loss (from 0 to 1)
     pub packet_loss: f64,
@@ -200,6 +200,19 @@ pub struct ConnectionStats {
 
     /// Average jitter or deviation (in seconds). It measures how far away all RTT samples are, or how "jittery" RTT samples are.
     pub jitter: f64,
+}
+
+impl Debug for ConnectionStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f, 
+            "{{ rtt: {:.2}ms, m. rtt: {:.2}ms, packet loss: {:.2}%, jitter: {:.2}ms }}",
+            self.rtt * 1000.0,
+            self.median_rtt * 1000.0,
+            self.packet_loss * 100.0,
+            self.jitter * 1000.0
+        )
+    }
 }
 
 #[cfg(test)]

@@ -470,8 +470,8 @@ impl SendManager {
         // Compute the total reduction between 0 and our MAX_PACKET_REDUCTION
         let reduction = (relation - 1.0) * MAX_PACKET_REDUCTION;
 
-        // Our resulting budget is our PPS * our reduction * delta time
-        (self.packets_per_second as f64 * (1.0 - reduction) * dt) as u32
+        // Our resulting budget is our PPS * our reduction * delta time. Still, ensure that there's always at least one packet
+        ((self.packets_per_second as f64 * (1.0 - reduction) * dt) as u32).max(1)
     }
 
     // Remove all messages from the message queue that were already received by the recipient
