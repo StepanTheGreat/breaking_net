@@ -1,10 +1,5 @@
 use std::{
-    any::Any,
-    collections::{HashMap, VecDeque},
-    fmt::Debug,
-    io,
-    net::{self, SocketAddr},
-    time::Duration,
+    any::Any, collections::{HashMap, VecDeque}, fmt::Debug, io, net::{self, SocketAddr}, time::Duration,
 };
 
 mod backend;
@@ -103,7 +98,6 @@ pub struct Socket {
 
     packet_builder: PacketCrateBuilder,
     connections: HashMap<net::SocketAddr, SocketConnection>,
-    recv_budgets: HashMap<net::SocketAddr, u32>,
 
     event_queue: VecDeque<SocketEvent>,
     message_queue: VecDeque<ReceivedMessage>,
@@ -133,7 +127,6 @@ impl Socket {
 
             packet_builder: PacketCrateBuilder::new(MTU_SIZE_PRIVATE),
             connections: HashMap::new(),
-            recv_budgets: HashMap::new(),
 
             event_queue: VecDeque::new(),
             message_queue: VecDeque::new(),
@@ -202,24 +195,8 @@ impl Socket {
         // No matter what delta we get, it will still be capped to 1s. Polls must be frequent.
         let dt = dt.min(Duration::from_secs(1));
 
-        // Clear our recv budgets from the last call
-        self.recv_budgets.clear();
-
-        // How many packets per address we can receive during this poll. Essentially rate limiting.
-        let recv_budget = (self.options.packets_per_second as f64 * dt.as_secs_f64()) as u32;
-
         // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
-            // Get current sender's budget
-            let budget = self.recv_budgets.entry(sender).or_insert(recv_budget);
-
-            // If it's 0 - simply drop this packet and don't do anything with it. Peers should respect our PPS.
-            if *budget == 0 {
-                continue;
-            };
-
-            // In any other case decrement the budget
-            *budget -= 1;
 
             // If it's decodable AND valid
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
