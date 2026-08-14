@@ -2,10 +2,14 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability, packet::{
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability,
+    packet::{
         MessageId, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage,
         build_ack_map,
-    }, socket::{SocketBackend, stats::RTTMeasurements}, utils::{StackVec, Time}, window::{LeadingAckWindow, SlidingAckWindow},
+    },
+    socket::{SocketBackend, stats::RTTMeasurements},
+    utils::{StackVec, Time},
+    window::{LeadingAckWindow, SlidingAckWindow},
 };
 
 mod pscore;
@@ -214,7 +218,13 @@ pub struct SendManager {
 
 impl SendManager {
     pub fn new(time: Time, to: net::SocketAddr, packets_per_second: u32) -> Self {
-        let rtt = RTTMeasurements::new(time.clone(), INIT_RTT, INIT_DEVIATION, RTT_ALPHA, RTT_HISTORY_LEN);
+        let rtt = RTTMeasurements::new(
+            time.clone(),
+            INIT_RTT,
+            INIT_DEVIATION,
+            RTT_ALPHA,
+            RTT_HISTORY_LEN,
+        );
 
         Self {
             to,
@@ -501,7 +511,10 @@ impl SendManager {
             // The delta here is `time - (timestamp + dt/2)`.
             // We're subtracting half of our delta time, because our packet could have been received during any interval between last poll and this one
             // (which is equal to delta time). By subtracting by half, we're compensating for the artifical latency from our polling.
-            let dt = self.time.elapsed().saturating_sub(packet.timestamp + dt.div_f32(2.0));
+            let dt = self
+                .time
+                .elapsed()
+                .saturating_sub(packet.timestamp + dt.div_f32(2.0));
 
             self.rtt.push(dt);
 

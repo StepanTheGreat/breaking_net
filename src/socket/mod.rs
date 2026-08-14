@@ -1,5 +1,10 @@
 use std::{
-    any::Any, collections::{HashMap, VecDeque}, fmt::Debug, io, net::{self, SocketAddr}, time::Duration,
+    any::Any,
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
+    io,
+    net::{self, SocketAddr},
+    time::Duration,
 };
 
 mod backend;
@@ -194,7 +199,6 @@ impl Socket {
     fn receive_messages(&mut self) {
         // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
-
             // If it's decodable AND valid
             let pcrate = match bitcode::decode::<PacketCrate>(data) {
                 Ok(pcrate) => pcrate,
@@ -207,13 +211,11 @@ impl Socket {
 
             // Get a connection for this sender
             match self.connections.get_mut(&sender) {
-
                 // If we got one - let the connection process the packet
                 Some(conn) => conn.process_packet(pcrate, data.len()),
-                
+
                 // In any other case it's an unknown sender
                 None => {
-
                     // Iterate and queue each of their messages into our queue
                     for message in pcrate.messages {
                         self.message_queue.push_back(ReceivedMessage {

@@ -1,14 +1,15 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability, packet::{
-        PacketAckMap, PacketCrate, PacketCrateBuilder, PacketSeqId, UserMessage,
-    }, socket::{
+    Reliability,
+    packet::{PacketAckMap, PacketCrate, PacketCrateBuilder, PacketSeqId, UserMessage},
+    socket::{
         SocketBackend,
         receiver::ReceiveManager,
         sender::{SendContext, SendManager},
         stats::{AdvancedConnectionStats, ConnectionStats},
-    }, utils::{Circular, Time},
+    },
+    utils::{Circular, Time},
 };
 
 /// After how many seconds to time out without receiving any packets
@@ -84,7 +85,8 @@ impl SocketConnection {
         }
 
         // push our new packet score
-        self.sender.push_new_packet_score(pcrate.packet_score_id, pcrate.packet_score);
+        self.sender
+            .push_new_packet_score(pcrate.packet_score_id, pcrate.packet_score);
 
         // let it mark all the acknowledgments it needs
         self.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map);
@@ -103,19 +105,13 @@ impl SocketConnection {
         self.time.tick(dt);
     }
 
-    pub fn poll(
-        &mut self,
-        socket: &mut dyn SocketBackend,
-        crate_builder: &mut PacketCrateBuilder,
-    ) {
+    pub fn poll(&mut self, socket: &mut dyn SocketBackend, crate_builder: &mut PacketCrateBuilder) {
         // Poll our sender
-        self.sender.poll(
-            SendContext {
-                socket,
-                packet_builder: crate_builder,
-                recv_packet_window: self.receiver.received_packets_window(),
-            }
-        );
+        self.sender.poll(SendContext {
+            socket,
+            packet_builder: crate_builder,
+            recv_packet_window: self.receiver.received_packets_window(),
+        });
     }
 
     /// Receive all *available* messages

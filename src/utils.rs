@@ -98,26 +98,21 @@ macro_rules! impl_avg_for_basic_types {
 impl_avg_for_basic_types!(usize, f64, u32);
 
 /// A combination of time and delta, all updated at once.
-/// 
+///
 /// Avoids passing time values everywhere
 #[derive(Clone)]
 pub struct Time(Rc<Cell<(Duration, Duration)>>);
 
 impl Time {
     pub fn new() -> Self {
-        Self(
-            Rc::new(Cell::new((Duration::ZERO, Duration::ZERO)))
-        )
+        Self(Rc::new(Cell::new((Duration::ZERO, Duration::ZERO))))
     }
 
     /// Tick this time by updating its elapsed and delta time
     pub fn tick(&self, dt: Duration) {
         let (time, _) = self.0.get();
 
-        self.0.set((
-            time + dt,
-            dt
-        ));
+        self.0.set((time + dt, dt));
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -133,8 +128,8 @@ impl Time {
 
 #[cfg(test)]
 mod tests {
-    use std::{assert_eq, time::Duration};
     use crate::utils::Time;
+    use std::{assert_eq, time::Duration};
 
     #[test]
     fn test_time() {
@@ -159,7 +154,6 @@ mod tests {
         assert_eq!(time.delta(), Duration::from_millis(1000));
     }
 }
-
 
 /// A minimal vector that starts on the stack and then moves to the heap
 pub enum StackVec<T, const S: usize>

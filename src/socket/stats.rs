@@ -47,18 +47,24 @@ pub struct RTTMeasurements {
     /// When to record next average RTT sample
     next_rtt_record: Duration,
 
-    time: Time
+    time: Time,
 }
 
 impl RTTMeasurements {
-    pub fn new(time: Time, init_rtt: Duration, init_dev: Duration, alpha: f64, history_len: usize) -> Self {
+    pub fn new(
+        time: Time,
+        init_rtt: Duration,
+        init_dev: Duration,
+        alpha: f64,
+        history_len: usize,
+    ) -> Self {
         Self {
             rtt: Ema::new(init_rtt.as_secs_f64(), alpha),
             rtt_dev: Ema::new(init_dev.as_secs_f64(), alpha),
             rtt_hist: Circular::new(history_len),
             rtt_hist_buff: Vec::with_capacity(history_len),
             next_rtt_record: Duration::ZERO,
-            time
+            time,
         }
     }
 
