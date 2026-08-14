@@ -30,8 +30,8 @@ const INIT_DEVIATION: Duration = Duration::from_millis(5);
 /// We'll start at 0 and let the protocol figure out the packet loss by itself
 const INIT_PACKET_LOSS: f64 = 0.0;
 
-/// Keep 60 RTT samples (60 seconds)
-const RTT_HISTORY_LEN: usize = 60;
+/// How long should RTT history be (should ideally be configurable)
+const RTT_HISTORY_LEN: usize = 30;
 
 /// Sets the prioritization rate for newer values. RTT is highly volatile, so an alpha of 0.1 (~10 samples) is usually good enough
 const RTT_ALPHA: f64 = 0.1;
