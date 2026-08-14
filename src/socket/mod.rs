@@ -301,11 +301,11 @@ impl Socket {
         // We should reset all our connections' immediate statistics
         self.reset_connections_immediate_stats();
 
-        // We're going to collect all messages received by this socket
-        self.receive_messages(dt);
-
         // Now, we're going to poll each connection individually as well
         self.poll_connections(dt);
+
+        // We're going to collect all messages received by this socket
+        self.receive_messages(dt);
 
         // Record all immediate statistics
         self.record_connections_immediate_stats();
