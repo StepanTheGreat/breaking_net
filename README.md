@@ -67,6 +67,7 @@ assert!(sock_b.is_connected(&addr_a));
 - [ ] Encryption + Handshake (probably using `snow`)
 - [ ] Socket customization (custom PPS, MTU limits, ...)
 - [ ] Better connection management (via UIDs, better reconnection)
+- [ ] Fix ID wraparound
 - [ ] Benchmarking (performance + memory consumption)
 - [ ] C ABI 
 
