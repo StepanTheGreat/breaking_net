@@ -22,10 +22,10 @@ use pwindow::{PacketWindow, PacketWindowEntry};
 const MAX_RESEND_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Initial RTT
-const INIT_RTT: Duration = Duration::from_millis(100);
+const INIT_RTT: Duration = Duration::from_millis(50);
 
 /// Initial RTT deviation
-const INIT_DEVIATION: Duration = Duration::from_millis(25);
+const INIT_DEVIATION: Duration = Duration::from_millis(5);
 
 /// We'll start at 0 and let the protocol figure out the packet loss by itself
 const INIT_PACKET_LOSS: f64 = 0.0;
