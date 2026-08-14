@@ -191,10 +191,7 @@ impl Socket {
     }
 
     /// Receive and distribute (to connections) messages
-    fn receive_messages(&mut self, dt: Duration) {
-        // No matter what delta we get, it will still be capped to 1s. Polls must be frequent.
-        let dt = dt.min(Duration::from_secs(1));
-
+    fn receive_messages(&mut self) {
         // For each packet that we received in our socket
         while let Some((data, sender)) = self.socket.recv_from() {
 
@@ -209,42 +206,22 @@ impl Socket {
             }
 
             // Get a connection for this sender
-            let mut connection = self.connections.get_mut(&sender);
+            match self.connections.get_mut(&sender) {
 
-            // If this is a message from a known connection
-            if let Some(conn) = connection.as_mut() {
-                // Some packets are ack-only, don't acknowledge those
-                if let Some(seq_id) = pcrate.seq_id {
-                    conn.mark_received_packet_id(seq_id, data.len());
-                }
+                // If we got one - let the connection process the packet
+                Some(conn) => conn.process_packet(pcrate, data.len()),
+                
+                // In any other case it's an unknown sender
+                None => {
 
-                // push our new packet score
-                conn.new_packet_score_received(pcrate.packet_score_id, pcrate.packet_score);
-
-                // let it mark all the acknowledgments it needs
-                conn.sent_packet_acknowledgments_received(
-                    pcrate.packet_base,
-                    pcrate.packet_map,
-                    dt,
-                );
-
-                // and reset its hearbeat timer as well
-                conn.reset_heartbeat_timer();
-            }
-
-            // Now we're going to iterate every single message
-            for message in pcrate.messages {
-                // If we have a connection and our message contains a message ID - we're going to notify our connection about it
-                if let Some(conn) = connection.as_mut() {
-                    // Process it (filter, reorder it and so on)
-                    conn.process_message(message);
-                } else {
-                    // In any other case we're just going to buffer it without a connection
-                    self.message_queue.push_back(ReceivedMessage {
-                        sender,
-                        reliability: message.reliability(),
-                        data: message.consume_payload().unwrap(),
-                    });
+                    // Iterate and queue each of their messages into our queue
+                    for message in pcrate.messages {
+                        self.message_queue.push_back(ReceivedMessage {
+                            sender,
+                            reliability: message.reliability(),
+                            data: message.consume_payload().unwrap(),
+                        });
+                    }
                 }
             }
         }
@@ -264,10 +241,16 @@ impl Socket {
         }
     }
 
+    fn update_connections_times(&mut self, dt: Duration) {
+        for (_, connection) in self.connections.iter() {
+            connection.update_time(dt);
+        }
+    }
+
     /// Poll all our connections and receive their messages
-    fn poll_connections(&mut self, dt: Duration) {
+    fn poll_connections(&mut self) {
         for (_, connection) in self.connections.iter_mut() {
-            connection.poll(self.socket.as_mut(), &mut self.packet_builder, dt);
+            connection.poll(self.socket.as_mut(), &mut self.packet_builder);
 
             while let Some(message) = connection.recv_message() {
                 let reliability = message.reliability();
@@ -298,14 +281,19 @@ impl Socket {
         // Poll our socket
         self.socket.poll(dt);
 
+        let dt = dt.min(Duration::from_secs(1));
+
         // We should reset all our connections' immediate statistics
         self.reset_connections_immediate_stats();
 
-        // Now, we're going to poll each connection individually as well
-        self.poll_connections(dt);
+        // Update our connections' times
+        self.update_connections_times(dt);
 
         // We're going to collect all messages received by this socket
-        self.receive_messages(dt);
+        self.receive_messages();
+
+        // Now, we're going to poll each connection individually as well
+        self.poll_connections();
 
         // Record all immediate statistics
         self.record_connections_immediate_stats();

@@ -1,17 +1,14 @@
 use std::{net, time::Duration};
 
 use crate::{
-    Reliability,
-    packet::{
-        PacketAckMap, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage,
-    },
-    socket::{
+    Reliability, packet::{
+        PacketAckMap, PacketCrate, PacketCrateBuilder, PacketSeqId, UserMessage,
+    }, socket::{
         SocketBackend,
         receiver::ReceiveManager,
         sender::{SendContext, SendManager},
         stats::{AdvancedConnectionStats, ConnectionStats},
-    },
-    utils::Circular,
+    }, utils::{Circular, Time},
 };
 
 /// After how many seconds to time out without receiving any packets
@@ -27,47 +24,43 @@ pub struct SocketConnection {
 
     last_hearbeat: Duration,
 
-    time: Duration,
+    time: Time,
 
     advanced_stats: Circular<AdvancedConnectionStats>,
 }
 
 impl SocketConnection {
     pub fn new(to: net::SocketAddr, packets_per_second: u32) -> Self {
-        let time = Duration::ZERO;
-        let sender = SendManager::new(time, to, packets_per_second);
+        let time = Time::new();
+        let sender = SendManager::new(time.clone(), to, packets_per_second);
         let receiver = ReceiveManager::new();
 
         Self {
             to,
             sender,
             receiver,
+            last_hearbeat: time.elapsed() + HEARBEAT_TIMEOUT,
             time,
-            last_hearbeat: time + HEARBEAT_TIMEOUT,
             advanced_stats: Circular::new(10),
         }
     }
 
-    pub fn reset_heartbeat_timer(&mut self) {
-        self.last_hearbeat = self.time + HEARBEAT_TIMEOUT;
-    }
-
-    /// Push new packet score into this connection
-    pub fn new_packet_score_received(&mut self, id: PacketScoreId, score: PacketScore) {
-        self.sender.push_new_packet_score(id, score);
+    fn reset_heartbeat_timer(&mut self) {
+        self.last_hearbeat = self.time.elapsed() + HEARBEAT_TIMEOUT;
     }
 
     /// Acknowledgments for our packets have been received on this connection
-    pub fn sent_packet_acknowledgments_received(
+    fn sent_packet_acknowledgments_received(
         &mut self,
         packet_base: PacketSeqId,
         packet_map: PacketAckMap,
-        dt: Duration,
     ) {
         // No acknowledgments
         if packet_base == 0 && packet_map == 0 {
             return;
         }
+
+        let dt = self.time.delta();
 
         // Init the cursor
         let mut cursor = 1;
@@ -84,35 +77,45 @@ impl SocketConnection {
         }
     }
 
+    pub fn process_packet(&mut self, pcrate: PacketCrate, bytes_len: usize) {
+        // Some packets are ack-only, don't acknowledge those
+        if let Some(seq_id) = pcrate.seq_id {
+            self.receiver.mark_received_packet_id(seq_id, bytes_len);
+        }
+
+        // push our new packet score
+        self.sender.push_new_packet_score(pcrate.packet_score_id, pcrate.packet_score);
+
+        // let it mark all the acknowledgments it needs
+        self.sent_packet_acknowledgments_received(pcrate.packet_base, pcrate.packet_map);
+
+        // and reset its hearbeat timer as well
+        self.reset_heartbeat_timer();
+
+        for message in pcrate.messages {
+            // Process it (filter, reorder it and so on)
+            self.receiver.process_message(message);
+        }
+    }
+
+    /// Update this time (should be called before processing any packets)
+    pub fn update_time(&self, dt: Duration) {
+        self.time.tick(dt);
+    }
+
     pub fn poll(
         &mut self,
         socket: &mut dyn SocketBackend,
         crate_builder: &mut PacketCrateBuilder,
-        dt: Duration,
     ) {
-        // Update our total time
-        self.time += dt;
-
         // Poll our sender
         self.sender.poll(
             SendContext {
                 socket,
                 packet_builder: crate_builder,
                 recv_packet_window: self.receiver.received_packets_window(),
-            },
-            self.time,
+            }
         );
-    }
-
-    /// Mark this recipient's sent packet as received.
-    /// We're expecting its length for statistics only.
-    pub fn mark_received_packet_id(&mut self, packet: PacketSeqId, len: usize) {
-        self.receiver.mark_received_packet_id(packet, len);
-    }
-
-    /// Process the provided message (by filtering it out)
-    pub fn process_message(&mut self, message: UserMessage) {
-        self.receiver.process_message(message);
     }
 
     /// Receive all *available* messages
@@ -141,7 +144,7 @@ impl SocketConnection {
 
     /// Check if this connection has timed out (no packets received)
     pub fn timed_out(&self) -> bool {
-        self.last_hearbeat <= self.time
+        self.last_hearbeat <= self.time.elapsed()
     }
 
     /// Get a complete snapshot of all the statistics of this connection

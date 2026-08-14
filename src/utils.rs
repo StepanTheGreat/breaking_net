@@ -1,4 +1,4 @@
-use std::{array, collections::VecDeque, ops::Add};
+use std::{array, cell::Cell, collections::VecDeque, ops::Add, rc::Rc, time::Duration};
 
 /// A utility polling macro (you can specify by how much to poll, how many times and which sockets)
 #[macro_export]
@@ -96,6 +96,70 @@ macro_rules! impl_avg_for_basic_types {
 }
 
 impl_avg_for_basic_types!(usize, f64, u32);
+
+/// A combination of time and delta, all updated at once.
+/// 
+/// Avoids passing time values everywhere
+#[derive(Clone)]
+pub struct Time(Rc<Cell<(Duration, Duration)>>);
+
+impl Time {
+    pub fn new() -> Self {
+        Self(
+            Rc::new(Cell::new((Duration::ZERO, Duration::ZERO)))
+        )
+    }
+
+    /// Tick this time by updating its elapsed and delta time
+    pub fn tick(&self, dt: Duration) {
+        let (time, _) = self.0.get();
+
+        self.0.set((
+            time + dt,
+            dt
+        ));
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        let (time, _) = self.0.get();
+        time
+    }
+
+    pub fn delta(&self) -> Duration {
+        let (_, delta) = self.0.get();
+        delta
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{assert_eq, time::Duration};
+    use crate::utils::Time;
+
+    #[test]
+    fn test_time() {
+        let time = Time::new();
+
+        assert_eq!(time.elapsed(), Duration::ZERO);
+        assert_eq!(time.delta(), Duration::ZERO);
+
+        time.tick(Duration::from_millis(50));
+
+        assert_eq!(time.elapsed(), Duration::from_millis(50));
+        assert_eq!(time.delta(), Duration::from_millis(50));
+
+        time.tick(Duration::from_millis(30));
+
+        assert_eq!(time.elapsed(), Duration::from_millis(80));
+        assert_eq!(time.delta(), Duration::from_millis(30));
+
+        time.tick(Duration::from_millis(1000));
+
+        assert_eq!(time.elapsed(), Duration::from_millis(1080));
+        assert_eq!(time.delta(), Duration::from_millis(1000));
+    }
+}
+
 
 /// A minimal vector that starts on the stack and then moves to the heap
 pub enum StackVec<T, const S: usize>

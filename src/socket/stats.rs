@@ -1,6 +1,6 @@
 use std::{fmt::Debug, ops::Add, time::Duration};
 
-use crate::utils::{Averageable, Circular};
+use crate::utils::{Averageable, Circular, Time};
 
 // We'll keep it at 500ms
 const RTT_RECORD_FREQ: Duration = Duration::from_millis(500);
@@ -46,16 +46,19 @@ pub struct RTTMeasurements {
 
     /// When to record next average RTT sample
     next_rtt_record: Duration,
+
+    time: Time
 }
 
 impl RTTMeasurements {
-    pub fn new(init_rtt: Duration, init_dev: Duration, alpha: f64, history_len: usize) -> Self {
+    pub fn new(time: Time, init_rtt: Duration, init_dev: Duration, alpha: f64, history_len: usize) -> Self {
         Self {
             rtt: Ema::new(init_rtt.as_secs_f64(), alpha),
             rtt_dev: Ema::new(init_dev.as_secs_f64(), alpha),
             rtt_hist: Circular::new(history_len),
             rtt_hist_buff: Vec::with_capacity(history_len),
             next_rtt_record: Duration::ZERO,
+            time
         }
     }
 
@@ -73,8 +76,8 @@ impl RTTMeasurements {
     }
 
     /// RTT measurements must be updated to keep recording average RTT history and computing the median
-    pub fn update(&mut self, dt: Duration) {
-        self.next_rtt_record = self.next_rtt_record.saturating_sub(dt);
+    pub fn update(&mut self) {
+        self.next_rtt_record = self.next_rtt_record.saturating_sub(self.time.delta());
 
         if self.next_rtt_record.is_zero() {
             self.next_rtt_record = RTT_RECORD_FREQ;
@@ -229,7 +232,8 @@ mod tests {
         const DT: Duration = RTT_RECORD_FREQ;
         const EPS: f64 = 0.02;
 
-        let mut stats = RTTMeasurements::new(RTT, DEV, 0.8, 20);
+        let time = Time::new();
+        let mut stats = RTTMeasurements::new(time.clone(), RTT, DEV, 0.8, 20);
 
         // By default there are no samples
         assert_eq_eps!(stats.median(), RTT.as_secs_f64(), EPS);
@@ -241,7 +245,8 @@ mod tests {
         // Push a few really lucky packets
         for _ in 0..2 {
             stats.push(Duration::from_millis(20));
-            stats.update(DT);
+            time.tick(DT);
+            stats.update();
             dbg!(stats.median());
         }
 
@@ -251,7 +256,8 @@ mod tests {
         // Let's push a few more packets (and record them)
         for _ in 0..10 {
             stats.push(RTT);
-            stats.update(DT);
+            time.tick(DT);
+            stats.update();
             dbg!(stats.median());
         }
 
@@ -264,7 +270,8 @@ mod tests {
         // Now we'll push and record two terrible latencies
         for _ in 0..2 {
             stats.push(Duration::from_millis(500));
-            stats.update(DT);
+            time.tick(DT);
+            stats.update();
         }
 
         // Our RTT must be drastically different, BUT, our median should stay the same, since according to history network's average

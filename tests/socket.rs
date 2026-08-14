@@ -323,8 +323,16 @@ fn test_heartbeat() {
     assert!(sock_a.is_connected(&sock_b.addr()));
     assert!(sock_b.is_connected(&sock_a.addr()));
 
-    // Poll them for 10 while seconds (more than enough to time out)
-    poll_socks!(Duration::from_secs(10), [sock_a, sock_b]);
+    // Make it impossible to send anything (auto RTT packets are always sent for measurements, which keeps the connection alive)
+    sock_a.virtual_settings().unwrap().set_packet_loss_rate(1.0);
+    sock_b.virtual_settings().unwrap().set_packet_loss_rate(1.0);
+
+    // Poll them for 10 whole seconds (more than enough to time out)
+    poll_socks!(10, Duration::from_secs(1), [sock_a, sock_b]);
+
+    // Remove the settings
+    sock_a.virtual_settings().unwrap().set_packet_loss_rate(0.0);
+    sock_b.virtual_settings().unwrap().set_packet_loss_rate(0.0);
 
     // They should be no longer corrected
     assert!(!sock_a.is_connected(&sock_b.addr()));

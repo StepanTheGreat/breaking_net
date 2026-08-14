@@ -2,14 +2,10 @@ use core::net;
 use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use crate::{
-    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability,
-    packet::{
+    MESSAGE_WINDOW_LEN, PACKET_WINDOW_LEN, Reliability, packet::{
         MessageId, PacketCrateBuilder, PacketScore, PacketScoreId, PacketSeqId, UserMessage,
         build_ack_map,
-    },
-    socket::{SocketBackend, stats::RTTMeasurements},
-    utils::StackVec,
-    window::{LeadingAckWindow, SlidingAckWindow},
+    }, socket::{SocketBackend, stats::RTTMeasurements}, utils::{StackVec, Time}, window::{LeadingAckWindow, SlidingAckWindow},
 };
 
 mod pscore;
@@ -212,13 +208,13 @@ pub struct SendManager {
     /// How many bytes have we sent during the last poll
     bytes_sent: usize,
 
-    /// Time should be managed differently
-    time: Duration,
+    /// Time current elapsed and delta time
+    time: Time,
 }
 
 impl SendManager {
-    pub fn new(time: Duration, to: net::SocketAddr, packets_per_second: u32) -> Self {
-        let rtt = RTTMeasurements::new(INIT_RTT, INIT_DEVIATION, RTT_ALPHA, RTT_HISTORY_LEN);
+    pub fn new(time: Time, to: net::SocketAddr, packets_per_second: u32) -> Self {
+        let rtt = RTTMeasurements::new(time.clone(), INIT_RTT, INIT_DEVIATION, RTT_ALPHA, RTT_HISTORY_LEN);
 
         Self {
             to,
@@ -280,7 +276,7 @@ impl SendManager {
             let message = self.message_queue[ind].clone();
 
             // If the message is ready
-            if message.is_ready(self.time) {
+            if message.is_ready(self.time.elapsed()) {
                 // Make sure to only remove unreliable messages
                 if message.message_id().is_none() {
                     self.message_queue.remove(ind);
@@ -298,8 +294,9 @@ impl SendManager {
         socket: &mut dyn SocketBackend,
         crate_builder: &mut PacketCrateBuilder,
         recv_packet_window: &LeadingAckWindow,
-        dt: Duration,
     ) {
+        let dt = self.time.delta();
+
         let mut candidates = VecDeque::with_capacity(self.message_queue.len());
         self.collect_candidates(&mut candidates);
 
@@ -380,7 +377,7 @@ impl SendManager {
                                 .min(MAX_RESEND_TIMEOUT);
 
                             // Set new timeout
-                            msg.set_send_time(self.time + new_timeout);
+                            msg.set_send_time(self.time.elapsed() + new_timeout);
 
                             // Make sure to increment attempts AFTER (the first attempt is always 0, so first back-off scale is 1)
                             msg.increment_attempts();
@@ -403,7 +400,7 @@ impl SendManager {
             };
 
             // If there was no reliable packet for a while now - make one.
-            if packet_id.is_none() && self.time >= self.last_reliable_packet {
+            if packet_id.is_none() && self.time.elapsed() >= self.last_reliable_packet {
                 packet_id = Some(self.packet_counter.next());
             }
 
@@ -420,7 +417,7 @@ impl SendManager {
                 // Register this packet to our window
                 self.sent_packet_window.push_sent(
                     packet_id,
-                    PacketWindowEntry::new(self.time, packed_rel_messages),
+                    PacketWindowEntry::new(self.time.elapsed(), packed_rel_messages),
                 );
             }
 
@@ -437,7 +434,7 @@ impl SendManager {
                 self.packet_score.consume_score();
 
                 // Make sure to reset our timer
-                self.last_reliable_packet = self.time
+                self.last_reliable_packet = self.time.elapsed()
                     + Duration::from_secs_f64(self.rtt.rtt())
                         .max(MIN_FORCED_RELIABLE_PACKET_TIMEOUT);
             }
@@ -504,7 +501,7 @@ impl SendManager {
             // The delta here is `time - (timestamp + dt/2)`.
             // We're subtracting half of our delta time, because our packet could have been received during any interval between last poll and this one
             // (which is equal to delta time). By subtracting by half, we're compensating for the artifical latency from our polling.
-            let dt = self.time.saturating_sub(packet.timestamp + dt.div_f32(2.0));
+            let dt = self.time.elapsed().saturating_sub(packet.timestamp + dt.div_f32(2.0));
 
             self.rtt.push(dt);
 
@@ -528,14 +525,10 @@ impl SendManager {
     }
 
     /// Poll the send manager (this will send all the queued messages)
-    pub fn poll(&mut self, ctx: SendContext, time: Duration) {
-        // Compute delta (important for PPS calculation)
-        let dt = time.saturating_sub(self.time);
-        self.time = time;
-
-        self.rtt.update(dt);
+    pub fn poll(&mut self, ctx: SendContext) {
+        self.rtt.update();
         self.cleanup_received_messages();
-        self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window, dt);
+        self.prepare_and_send(ctx.socket, ctx.packet_builder, ctx.recv_packet_window);
     }
 
     /// Get latest RTT measurements
